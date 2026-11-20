@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ota2fastboot"
+version = "0.1.0"
+description = "Convert an extracted vivo/iQOO full OTA into a fastboot package"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[project.scripts]
+ota2fastboot = "ota2fastboot.cli:main"
+
+[tool.setuptools]
+packages = ["ota2fastboot"]

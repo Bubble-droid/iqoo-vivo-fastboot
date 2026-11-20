@@ -1,0 +1,22 @@
+# Generated fastboot packages
+/out
+
+# Python bytecode
+__pycache__
+*.py[cod]
+
+# Python packaging artifacts
+/build
+/dist
+/*.egg-info/
+
+# Local development artifacts (not part of the project)
+/.agents
+/.firmwares
+/.references
+/.worktrees
+
+# Artifacts from older package layouts (not used by this project)
+/firmware-update
+/oem.txt
+/device-info.txt
