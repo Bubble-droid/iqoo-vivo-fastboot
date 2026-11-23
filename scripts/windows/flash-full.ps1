@@ -1,27 +1,24 @@
-#!/usr/bin/env bash
 # Full fastboot flashing script for a generated vivo/iQOO package.
 #
 # Writes every partition produced by ota2fastboot.py, including the bootloader
 # chain (xbl, abl, tz, hyp, ...) and the UFS firmware (storage).  An interrupted
 # bootloader write can leave the phone unbootable without EDL recovery.  Use
-# ./flash.sh when you want an AP-only flash that keeps fastboot reachable.
+# .\flash.ps1 when you want an AP-only flash that keeps fastboot reachable.
 
-set -euo pipefail
+$ErrorActionPreference = 'Stop'
+$script:ScriptDir = $PSScriptRoot
+Set-Location -LiteralPath $script:ScriptDir
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "$(readlink -f -- "$0")")" && pwd)"
-cd -- "$SCRIPT_DIR" || exit 1
+. (Join-Path $PSScriptRoot 'common.ps1')
+$script:ExtraArgs = @($args)
+Read-PackageEnv
 
-EXTRA_ARGS=("$@")
+Require-Fastboot
+Assert-Interactive
+$title = if ($script:PackageTitle) { $script:PackageTitle } else { 'vivo/iQOO fastboot package' }
+Set-Title $title
 
-# shellcheck source=common.sh
-. "$SCRIPT_DIR/common.sh"
-load_package_env "$SCRIPT_DIR"
-
-require_fastboot
-require_tty
-set_title "${PACKAGE_TITLE:-vivo/iQOO fastboot package}"
-
-FLASH_ITEMS=(
+$items = @(
     "boot|firmware-update/boot.img"
     "modem|firmware-update/NON-HLOS.bin|optional"
     "dsp|firmware-update/dspso.bin|optional"
@@ -59,45 +56,45 @@ FLASH_ITEMS=(
     "super|firmware-update/super.img"
 )
 
-preflight_items "${FLASH_ITEMS[@]}"
+Test-PreflightItems -Items $items
 
-echo
-echo " -- This is a FULL flash: bootloader and UFS firmware will be written."
-echo " -- An interrupted bootloader write can make the phone unrecoverable"
-echo " -- without EDL. Keep the USB cable connected and do not touch the phone."
-echo " -- For an AP-only flash that keeps fastboot reachable, use ./flash.sh."
-echo
-echo " -- Before use, make sure the phone is connected and either booted with"
-echo " -- USB debugging enabled, or already in Fastboot mode."
-echo " -- In ADB mode the script records the real OEM identity first, so the"
-echo " -- matching OEM partition can be restored after flashing."
-echo
-if ! confirm "Start flashing now?" y; then
-    echo "-- Canceled."
+Write-Host ''
+Write-Host ' -- This is a FULL flash: bootloader and UFS firmware will be written.'
+Write-Host ' -- An interrupted bootloader write can make the phone unrecoverable'
+Write-Host ' -- without EDL. Keep the USB cable connected and do not touch the phone.'
+Write-Host ' -- For an AP-only flash that keeps fastboot reachable, use .\flash.ps1.'
+Write-Host ''
+Write-Host ' -- Before use, make sure the phone is connected and either booted with'
+Write-Host ' -- USB debugging enabled, or already in Fastboot mode.'
+Write-Host ' -- In ADB mode the script records the real OEM identity first, so the'
+Write-Host ' -- matching OEM partition can be restored after flashing.'
+Write-Host ''
+if (-not (Confirm-Action -Prompt 'Start flashing now?' -Default 'y')) {
+    Write-Host '-- Canceled.'
     exit 0
-fi
+}
 
-cls
-acquire_device
-cls
-show_device_info
-enter_fastboot
+Clear-Screen
+Acquire-Device
+Clear-Screen
+Show-DeviceInfo
+Enter-Fastboot
 
-cls
-echo
-check_unlocked
-check_model
-write_device_info
+Clear-Screen
+Write-Host ''
+Check-Unlocked
+Check-Model
+Write-DeviceInfo
 
-echo " -- Device unlocked"
-echo " -- Device check passed"
-echo
-echo "-------------------------------------------"
-sleep 1
-cls
-echo
+Write-Host ' -- Device unlocked'
+Write-Host ' -- Device check passed'
+Write-Host ''
+Write-Host '-------------------------------------------'
+Start-Sleep -Seconds 1
+Clear-Screen
+Write-Host ''
 
-flash_items "${FLASH_ITEMS[@]}"
-repair_oem
-final_reboot
-pause
+Flash-Items -Items $items
+Repair-Oem
+Final-Reboot
+Pause-ForUser

@@ -10,33 +10,78 @@ from pathlib import Path
 from .errors import ToolError
 from .log import Log
 
-REQUIRED_SCRIPTS = (
-    "common.sh",
-    "flash.sh",
-    "flash-full.sh",
-    "flash-safe.sh",
-    "fix-oem.sh",
-    "verify.sh",
-)
+# Script templates are grouped by the platform that runs them.  Linux and
+# macOS share the bash scripts; Windows uses native PowerShell scripts (the
+# .cmd files are small launchers that bypass the execution policy).
+SCRIPT_FAMILY = {
+    "linux": "bash",
+    "macos": "bash",
+    "windows": "windows",
+}
+
+SCRIPT_PATTERNS = {
+    "bash": ("*.sh",),
+    "windows": ("*.ps1", "*.cmd"),
+}
+
+REQUIRED_SCRIPTS = {
+    "bash": (
+        "common.sh",
+        "flash.sh",
+        "flash-full.sh",
+        "flash-safe.sh",
+        "fix-oem.sh",
+        "verify.sh",
+    ),
+    "windows": (
+        "common.ps1",
+        "flash.ps1",
+        "flash-full.ps1",
+        "flash-safe.ps1",
+        "fix-oem.ps1",
+        "verify.ps1",
+    ),
+}
 
 
-def copy_scripts(scripts_dir: Path, out: Path, log: Log) -> list[str]:
-    if not scripts_dir.is_dir():
-        raise ToolError(f"scripts directory not found: {scripts_dir}")
-    sources = sorted(scripts_dir.glob("*.sh"))
+def script_family(platform: str) -> str:
+    try:
+        return SCRIPT_FAMILY[platform]
+    except KeyError:
+        raise ToolError(f"unsupported target platform: {platform}") from None
+
+
+def copy_scripts(
+    scripts_dir: Path, out: Path, platform: str, log: Log
+) -> list[str]:
+    family = script_family(platform)
+    source_dir = scripts_dir / family
+    if not source_dir.is_dir():
+        raise ToolError(f"scripts directory for {platform} not found: {source_dir}")
+    sources: list[Path] = []
+    for pattern in SCRIPT_PATTERNS[family]:
+        sources.extend(source_dir.glob(pattern))
+    sources = sorted(set(sources))
     if not sources:
-        raise ToolError(f"no *.sh files in {scripts_dir}")
+        raise ToolError(f"no script templates in {source_dir}")
     names = {source.name for source in sources}
-    for required in REQUIRED_SCRIPTS:
+    for required in REQUIRED_SCRIPTS[family]:
         if required not in names:
-            raise ToolError(f"missing script template: {scripts_dir / required}")
+            raise ToolError(f"missing script template: {source_dir / required}")
+
     copied: list[str] = []
     for source in sources:
         destination = out / source.name
         shutil.copy2(source, destination)
-        destination.chmod(0o755)
+        if family == "bash":
+            destination.chmod(0o755)
+        elif source.suffix == ".cmd":
+            # Batch files are more reliable with CRLF even when the package is
+            # assembled on a Linux host.
+            text = source.read_text(encoding="utf-8").replace("\r\n", "\n")
+            destination.write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
         copied.append(source.name)
-        log(f"  {source.name} <- scripts/{source.name}")
+        log(f"  {source.name} <- scripts/{family}/{source.name}")
     return copied
 
 
@@ -64,10 +109,18 @@ def write_package_env(
     log(f"  package.env: {title}")
 
 
-def check_script_contract(out: Path, log: Log) -> None:
+def check_script_contract(out: Path, platform: str, log: Log) -> None:
+    family = script_family(platform)
+    if family == "windows":
+        flash_scripts = ("flash.ps1", "flash-full.ps1")
+        support_scripts = ("common.ps1", "verify.ps1")
+    else:
+        flash_scripts = ("flash.sh", "flash-full.sh")
+        support_scripts = ("common.sh", "verify.sh")
+
     optional_missing: list[str] = []
     checked = 0
-    for name in ("flash.sh", "flash-full.sh"):
+    for name in flash_scripts:
         script = out / name
         if not script.is_file():
             raise ToolError(f"missing generated script: {name}")
@@ -84,13 +137,13 @@ def check_script_contract(out: Path, log: Log) -> None:
                 else:
                     raise ToolError(f"{name} requires a missing file: {relative}")
 
-    for name in ("common.sh", "verify.sh"):
+    for name in support_scripts:
         if not (out / name).is_file():
             raise ToolError(f"{name} missing")
 
     oem_images = list((out / "firmware-update" / "oem").glob("OEM_*.img"))
     log(
-        f"script contract: {checked} image references ok, "
+        f"script contract ({family}): {checked} image references ok, "
         f"{len(oem_images)} OEM variants present"
     )
     if optional_missing:

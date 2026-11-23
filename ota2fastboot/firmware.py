@@ -8,7 +8,7 @@ from pathlib import Path
 from .errors import ToolError
 from .log import Log
 
-# Images referenced by scripts/flash.sh.  Each entry is
+# Images referenced by the full flash script.  Each entry is
 #   (fastboot partition, OTA-relative candidates, output name, required)
 # The first existing candidate wins.  ``boot`` and ``vm-bootsys`` are
 # special-cased because they come from the package root / a transfer list.

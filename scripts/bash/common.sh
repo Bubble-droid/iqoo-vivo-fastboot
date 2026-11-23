@@ -6,7 +6,7 @@
 #   package.env                  generated metadata (title, model pattern)
 #   firmware-update/             partition images
 #   firmware-update/oem/         OEM repair images
-#   platform-tools/              optional bundled adb/fastboot (Windows target)
+#   platform-tools/              optional adb/fastboot directory
 #
 # The helpers never embed an absolute host path in the package.
 

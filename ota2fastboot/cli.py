@@ -49,7 +49,7 @@ def make_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "package every OEM repair variant from the OTA; by default only the "
-            "variant placed in super is kept (use fix-oem.sh for the rest)"
+            "variant placed in super is kept (use the package OEM repair script)"
         ),
     )
     parser.add_argument(
@@ -57,7 +57,8 @@ def make_parser() -> argparse.ArgumentParser:
         choices=("linux", "windows", "macos"),
         help=(
             "target platform for the package (default: the build host); "
-            "windows packages may bundle platform-tools"
+            "linux/macos packages ship bash scripts, windows packages ship "
+            "native PowerShell scripts"
         ),
     )
     parser.add_argument(
@@ -79,7 +80,10 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--scripts-dir",
         type=Path,
-        help="package script templates (default: <repo>/scripts)",
+        help=(
+            "package script template root with bash/ and windows/ "
+            "(default: <repo>/scripts)"
+        ),
     )
     parser.add_argument(
         "--serial",

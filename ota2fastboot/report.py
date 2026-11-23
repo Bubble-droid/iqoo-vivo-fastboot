@@ -68,8 +68,10 @@ def render_package_readme(
 ) -> str:
     version = props.get("post-version", props.get("post-build-incremental", "unknown"))
     device = props.get("pre-device", "unknown")
+    windows = target_platform == "windows"
+    fix_cmd = ".\\fix-oem.cmd" if windows else "./fix-oem.sh"
     oem_text = (
-        "未写入 `super`，刷机后仍可通过 `fix-oem.sh` 修复"
+        f"未写入 `super`，刷机后仍可通过 `{fix_cmd}` 修复"
         if oem_name == "none"
         else f"`{oem_name}`"
     )
@@ -83,15 +85,82 @@ def render_package_readme(
     else:
         oem_note = "未打包 OEM 修复镜像。"
     if platform_tools_bundled:
-        tools_note = (
-            "本包附带 `platform-tools/`，脚本会自动把它加入 `PATH`。"
-            "Windows 请在 Git Bash 中运行。"
-        )
+        tools_note = "本包附带 `platform-tools/`，脚本会自动把它加入 `PATH`。"
     else:
         tools_note = (
             "本包未附带 `adb` / `fastboot`。请先安装 Android platform-tools，"
-            "或把 `platform-tools/` 放到包目录并加入 `PATH`。"
+            "或把 `platform-tools/` 放到包目录，脚本会自动加入 `PATH`。"
         )
+
+    if windows:
+        requirements = (
+            "- 刷机脚本是原生 PowerShell，Windows 10/11 自带的 PowerShell 5.1+ 即可。\n"
+            "- 建议运行包内 `.cmd` 启动器；它会用 `-ExecutionPolicy Bypass` 调用 `.ps1`。\n"
+            "- 直接运行 `.ps1` 时，如被执行策略阻止，请使用 `.cmd` 启动器。"
+        )
+        verify_block = (
+            "```powershell\n"
+            "Unblock-File .\\*.ps1\n"
+            ".\\verify.cmd\n"
+            "```"
+        )
+        flash_block = (
+            "```powershell\n"
+            ".\\flash.cmd        # 默认：只写 Android 分区，保留 bootloader 与 Fastboot 退路\n"
+            ".\\flash-full.cmd   # 完整线刷：包含 bootloader 链与 UFS 固件，风险高\n"
+            "```"
+        )
+        modem_block = (
+            "```powershell\n"
+            "$env:FLASH_SAFE_WITH_MODEM = \"1\"\n"
+            ".\\flash.cmd\n"
+            "```"
+        )
+        fix_block = (
+            "```powershell\n"
+            ".\\fix-oem.cmd --list\n"
+            ".\\fix-oem.cmd --name <变体名>\n"
+            "```"
+        )
+        alias_note = "`flash-safe.cmd` 是旧名称，保留为 `flash.cmd` 的兼容别名。"
+        platform_note = (
+            f"{tools_note}\n\n"
+            "Windows 包只包含 PowerShell 脚本（`.ps1` 与 `.cmd` 启动器），"
+            "不需要 Git Bash 或 WSL。"
+        )
+    else:
+        requirements = (
+            "- 刷机脚本需要 bash。Linux 与 macOS 原生可用。"
+        )
+        verify_block = (
+            "```bash\n"
+            "chmod +x ./*.sh\n"
+            "./verify.sh\n"
+            "```"
+        )
+        flash_block = (
+            "```bash\n"
+            "./flash.sh        # 默认：只写 Android 分区，保留 bootloader 与 Fastboot 退路\n"
+            "./flash-full.sh   # 完整线刷：包含 bootloader 链与 UFS 固件，风险高\n"
+            "```"
+        )
+        modem_block = (
+            "```bash\n"
+            "FLASH_SAFE_WITH_MODEM=1 ./flash.sh\n"
+            "```"
+        )
+        fix_block = (
+            "```bash\n"
+            "./fix-oem.sh --list\n"
+            "./fix-oem.sh --name <变体名>\n"
+            "```"
+        )
+        alias_note = "`flash-safe.sh` 是旧名称，保留为 `flash.sh` 的兼容别名。"
+        platform_note = (
+            f"{tools_note}\n\n"
+            "Linux 与 macOS 包只包含 bash 脚本。"
+        )
+
     return f"""# {device} Fastboot 刷机包
 
 - 来源 OTA: `{package.name}`
@@ -108,37 +177,29 @@ def render_package_readme(
 - 手机已解锁 Bootloader。
 - 电量高于 35%，USB 数据线保持连接。
 - 刷机会清空数据，先备份。
-- 刷机脚本需要 bash。Linux 原生可用；Windows 请在 Git Bash 中运行。
+{requirements}
 
 ## 校验
 
 刷机前先校验包内文件：
 
-```bash
-chmod +x ./*.sh
-./verify.sh
-```
+{verify_block}
 
 `manifest.sha256` 覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
 
 ## 刷机
 
-```bash
-./flash.sh        # 默认：只写 Android 分区，保留 bootloader 与 Fastboot 退路
-./flash-full.sh   # 完整线刷：包含 bootloader 链与 UFS 固件，风险高
-```
+{flash_block}
 
-`flash.sh` 会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、
+刷机脚本会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、
 `vbmeta*`、`super`，并在最后修复 OEM 身份。需要连同 modem 组一起写入时：
 
-```bash
-FLASH_SAFE_WITH_MODEM=1 ./flash.sh
-```
+{modem_block}
 
-`flash-full.sh` 额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等。bootloader
+完整线刷脚本额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等。bootloader
 写入中断可能只能靠 EDL 恢复。没有 EDL 手段时不要使用。
 
-`flash-safe.sh` 是旧名称，保留为 `flash.sh` 的兼容别名。
+{alias_note}
 
 ## OEM 与 VGC
 
@@ -149,18 +210,11 @@ FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 刷机脚本会优先读取手机当前的 OEM 身份并恢复对应镜像；无法读取时才回退到
 本包默认值。刷完后如需更换制式：
 
-```bash
-./fix-oem.sh --list
-./fix-oem.sh --name <变体名>
-```
+{fix_block}
 
-## Windows
+## 平台说明
 
-{tools_note}
-
-Windows 目标平台只影响是否附带 `platform-tools/`；包内刷机脚本仍是 bash，
-因此需要 Git Bash 或 WSL。使用 WSL 时请把 `platform-tools/` 内的 Windows
-程序加入可执行的 Windows 路径，或直接在 Git Bash 中运行。
+{platform_note}
 
 ## 刷机记录
 
@@ -279,6 +333,44 @@ def render_build_md(
     ]
     for name in sorted(super_parts):
         lines.append(f"| `{name}` | {super_parts[name]} |")
+    if target_platform == "windows":
+        flashing = [
+            "```powershell",
+            ".\\verify.cmd     # verify manifest.sha256",
+            ".\\flash.cmd      # default: Android partitions only",
+            ".\\flash-full.cmd # full flash, bootloader included",
+            "```",
+            "",
+            "Both scripts require an unlocked bootloader. `flash-full.cmd` writes",
+            "the bootloader chain (`xbl`, `abl`, `tz`, `hyp`, `aop`, `devcfg`,",
+            "...) and the UFS firmware. A failed bootloader write can leave the",
+            "phone unbootable without EDL recovery; use `flash.cmd` when that",
+            "recovery path is unavailable. `flash-safe.cmd` remains as an alias",
+            "for `flash.cmd`.",
+            "",
+            "If the OEM identity is wrong after flashing, run `.\\fix-oem.cmd` and",
+            "select the variant that matches the phone.",
+        ]
+    else:
+        flashing = [
+            "```bash",
+            "chmod +x ./*.sh",
+            "./verify.sh       # verify manifest.sha256",
+            "./flash.sh        # default: Android partitions only",
+            "./flash-full.sh   # full flash, bootloader included",
+            "```",
+            "",
+            "Both scripts require an unlocked bootloader. `flash-full.sh` writes",
+            "the bootloader chain (`xbl`, `abl`, `tz`, `hyp`, `aop`, `devcfg`,",
+            "...) and the UFS firmware. A failed bootloader write can leave the",
+            "phone unbootable without EDL recovery; use `flash.sh` when that",
+            "recovery path is unavailable. `flash-safe.sh` remains as an alias",
+            "for `flash.sh`.",
+            "",
+            "If the OEM identity is wrong after flashing, run `./fix-oem.sh` and",
+            "select the variant that matches the phone.",
+        ]
+
     lines += [
         "",
         f"OEM variant in super: `{oem_name}` ({oem_note}).",
@@ -287,21 +379,9 @@ def render_build_md(
         "",
         "## Flashing",
         "",
-        "```bash",
-        "chmod +x ./*.sh",
-        "./verify.sh       # verify manifest.sha256",
-        "./flash.sh        # default: Android partitions only",
-        "./flash-full.sh   # full flash, bootloader included",
-        "```",
-        "",
-        "Both scripts require an unlocked bootloader. `flash-full.sh` writes the",
-        "bootloader chain (`xbl`, `abl`, `tz`, `hyp`, `aop`, `devcfg`, ...) and",
-        "the UFS firmware. A failed bootloader write can leave the phone",
-        "unbootable without EDL recovery; use `flash.sh` when that recovery",
-        "path is unavailable. `flash-safe.sh` remains as an alias for `flash.sh`.",
-        "",
-        "If the OEM identity is wrong after flashing, run `./fix-oem.sh` and",
-        "select the variant that matches the phone.",
+    ]
+    lines += flashing
+    lines += [
         "",
         "## Images",
         "",
@@ -315,7 +395,8 @@ def render_build_md(
     lines += [
         "",
         "The complete file list, including scripts and this report, is in",
-        "`manifest.json`; `./verify.sh` checks it.",
+        "`manifest.json`; run the package verify script (`verify.sh` or",
+        "`verify.cmd`) to check it.",
         "",
         "## Not included",
         "",

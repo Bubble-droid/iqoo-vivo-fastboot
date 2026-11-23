@@ -466,6 +466,7 @@ def install_scripts(
     models: list[str],
     plan: SuperPlan,
     args: argparse.Namespace,
+    platform: str,
     log: Log,
 ) -> list[str]:
     log("=== package scripts ===")
@@ -475,9 +476,9 @@ def install_scripts(
     if args.no_scripts:
         log("  skipped (--no-scripts)")
         return []
-    script_names = copy_scripts(scripts_dir, out, log)
+    script_names = copy_scripts(scripts_dir, out, platform, log)
     write_package_env(out, props, "|".join(models), plan.oem_name, log)
-    check_script_contract(out, log)
+    check_script_contract(out, platform, log)
     return script_names
 
 
@@ -617,6 +618,16 @@ def _run(
     log(f"device={props['pre-device']} build={props['post-build']}")
     log(f"output={display_out}")
 
+    target_platform = _target_platform(args)
+    log(f"target platform: {target_platform}")
+    if args.platform_tools_dir is not None:
+        if target_platform != "windows":
+            raise ToolError("--platform-tools-dir requires --target-platform windows")
+        if not args.platform_tools_dir.is_dir():
+            raise ToolError(
+                f"platform-tools directory not found: {args.platform_tools_dir}"
+            )
+
     probed_device = _probe_target(args, props, log)
     device = probed_device if probed_device and probed_device.used else None
     if device:
@@ -643,15 +654,6 @@ def _run(
             f"{name}={fmt_size(size)}" for name, size in sorted(plan.sizes.items())
         )
     )
-
-    target_platform = _target_platform(args)
-    if args.platform_tools_dir is not None:
-        if target_platform != "windows":
-            raise ToolError("--platform-tools-dir requires --target-platform windows")
-        if not args.platform_tools_dir.is_dir():
-            raise ToolError(
-                f"platform-tools directory not found: {args.platform_tools_dir}"
-            )
 
     data_bytes = sum(plan.sizes.values())
     need = (
@@ -710,6 +712,7 @@ def _run(
         package_models,
         plan,
         args,
+        target_platform,
         log,
     )
 
@@ -815,6 +818,14 @@ def _run(
     log("=== done ===")
     log(f"package: {display_out}")
     log(f"size: {fmt_size(sum(record['size'] for record in manifest))}")
-    log(f"run: cd {display_out} && chmod +x ./*.sh && ./verify.sh && ./flash.sh")
-    log("full flash: ./flash-full.sh (writes bootloader and UFS firmware)")
+    if script_names:
+        if target_platform == "windows":
+            log(f"run: cd {display_out} && .\\verify.cmd && .\\flash.cmd")
+            log("full flash: .\\flash-full.cmd (writes bootloader and UFS firmware)")
+        else:
+            log(
+                f"run: cd {display_out} && chmod +x ./*.sh && "
+                "./verify.sh && ./flash.sh"
+            )
+            log("full flash: ./flash-full.sh (writes bootloader and UFS firmware)")
     return 0
