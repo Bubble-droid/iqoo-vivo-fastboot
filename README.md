@@ -68,7 +68,7 @@ cd <repo>
 ./ota2fastboot.py /path/to/<full-ota>
 ```
 
-默认输出到 `out/<OTA 名称>/`。先看计划、不写镜像：
+默认输出到 `out/<OTA 名称>-fastboot/`，其中 `<OTA 名称>` 取自 OTA 元数据的 `post-version`，而非来源目录名。例如 `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` 对应 `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`。先看计划、不写镜像：
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
@@ -77,7 +77,7 @@ cd <repo>
 制作完成后：
 
 ```bash
-cd out/<OTA 名称>
+cd out/<OTA 名称>-fastboot
 chmod +x ./*.sh
 
 ./flash-safe.sh   # 只刷 Android 分区，保留 bootloader 与 fastboot 退路
@@ -87,7 +87,7 @@ chmod +x ./*.sh
 ## 输出结构
 
 ```text
-out/<OTA 名称>/
+out/<OTA 名称>-fastboot/
 ├── BUILD.md                  # 构建报告：分区表、变体、校验结果
 ├── build.json                # 机器可读的构建参数与结果
 ├── build.log                 # 完整日志，路径已脱敏

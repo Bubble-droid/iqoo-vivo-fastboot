@@ -42,12 +42,17 @@ class SuperPlan:
 
 def build(args: argparse.Namespace) -> int:
     package = args.package.resolve()
-    out, display_out = _output_dir(args, package)
     scripts_dir = (args.scripts_dir or REPO_ROOT / "scripts").resolve()
 
     if not (package / "META-INF" / "com" / "android" / "metadata").is_file():
         print(f"error: {package} is not an extracted OTA package", file=sys.stderr)
         return 2
+
+    try:
+        out, display_out = _output_dir(args, package)
+    except ToolError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
 
     code = _prepare_output(args, out)
     if code is not None:
@@ -73,7 +78,17 @@ def build(args: argparse.Namespace) -> int:
 
 
 def _output_dir(args: argparse.Namespace, package: Path) -> tuple[Path, str]:
-    out = (args.output or REPO_ROOT / "out" / package.name.replace("-update-full", "")).resolve()
+    if args.output:
+        out = args.output
+    else:
+        props = read_props(package / "META-INF" / "com" / "android" / "metadata")
+        name = props.get("post-version")
+        if not name:
+            raise ToolError("OTA metadata lacks post-version")
+        if name in {".", ".."} or Path(name).name != name or "\0" in name:
+            raise ToolError(f"invalid OTA post-version: {name!r}")
+        out = REPO_ROOT / "out" / f"{name}-fastboot"
+    out = out.resolve()
     try:
         display_out = out.relative_to(REPO_ROOT).as_posix()
     except ValueError:

@@ -68,7 +68,7 @@ cd <repo>
 ./ota2fastboot.py /path/to/<full-ota>
 ```
 
-The package is written to `out/<OTA name>/` by default. To validate and print the plan without writing images:
+The package is written to `out/<OTA name>-fastboot/` by default, where `<OTA name>` comes from the OTA metadata field `post-version`, not the source directory name. For example, `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` maps to `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`. To validate and print the plan without writing images:
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
@@ -77,7 +77,7 @@ The package is written to `out/<OTA name>/` by default. To validate and print th
 After the build:
 
 ```bash
-cd out/<OTA name>
+cd out/<OTA name>-fastboot
 chmod +x ./*.sh
 
 ./flash-safe.sh   # Android partitions only; bootloader and fastboot rollback path preserved
@@ -87,7 +87,7 @@ chmod +x ./*.sh
 ## Output layout
 
 ```text
-out/<OTA name>/
+out/<OTA name>-fastboot/
 ├── BUILD.md                  # build report: partition table, variants, verification
 ├── build.json                # machine-readable build arguments and results
 ├── build.log                 # full log with host paths redacted
