@@ -46,51 +46,81 @@ def choose_oem(
     requested: str,
     package: Path,
     props: dict[str, str],
+    device_oem: str | None = None,
 ) -> tuple[str, str]:
     variants = oem_variants(package)
     if not variants:
         return "none", "OTA has no OEM variants"
     if requested == "none":
         return "none", "oem partition left empty in super"
-    if requested == "auto":
-        models = model_candidates(props)
-        for model in models:
-            for suffix in (
-                "_CN-ZH_FULL_SC_NULL",
-                "_CN-ZH_FULL_SC_GMS",
-                "_CN-ZH_FULL_SC_CT-BMW",
-            ):
-                candidate = model + suffix
-                if candidate in variants:
-                    return candidate, f"auto, {model} FULL_SC variant"
-        for model in models:
-            for variant in variants:
-                if variant.startswith(model + "_") and "FULL_SC" in variant:
-                    return variant, f"auto, first {model} FULL_SC variant"
-        for model in models:
-            for variant in variants:
-                if variant.startswith(model + "_"):
-                    return variant, f"auto, first {model} variant"
-        return variants[0], "auto, first variant"
-    if requested not in variants:
-        raise ToolError(
-            f"OEM variant {requested} not in OTA. Available: {', '.join(variants)}"
-        )
-    return requested, "explicit"
+    if requested != "auto":
+        if requested not in variants:
+            raise ToolError(
+                f"OEM variant {requested} not in OTA. Available: {', '.join(variants)}"
+            )
+        note = "explicit"
+        if device_oem and device_oem != requested:
+            note = f"explicit, connected device reports {device_oem}"
+        return requested, note
+
+    device_note = ""
+    if device_oem:
+        if device_oem in variants:
+            return device_oem, f"connected device identity {device_oem}"
+        device_note = f"connected device identity {device_oem} not in OTA; "
+
+    models = model_candidates(props)
+    for model in models:
+        for suffix in (
+            "_CN-ZH_FULL_SC_NULL",
+            "_CN-ZH_FULL_SC_GMS",
+            "_CN-ZH_FULL_SC_CT-BMW",
+        ):
+            candidate = model + suffix
+            if candidate in variants:
+                return candidate, device_note + f"auto, {model} FULL_SC variant"
+    for model in models:
+        for variant in variants:
+            if variant.startswith(model + "_") and "FULL_SC" in variant:
+                return variant, device_note + f"auto, first {model} FULL_SC variant"
+    for model in models:
+        for variant in variants:
+            if variant.startswith(model + "_"):
+                return variant, device_note + f"auto, first {model} variant"
+    return variants[0], device_note + "auto, first variant"
 
 
-def choose_vgc(requested: str, package: Path) -> tuple[str, str]:
+def choose_vgc(
+    requested: str,
+    package: Path,
+    device_vgc: str | None = None,
+) -> tuple[str, str]:
     variants = vgc_variants(package)
     if not variants:
         return "none", "OTA has no vgc variants"
     if requested == "none":
         return "none", "vgc partition omitted from super"
-    if requested == "auto":
-        preferred = [item for item in variants if item.startswith("V000")]
-        chosen = preferred[0] if preferred else variants[0]
-        return chosen, f"auto, {chosen}"
-    if requested not in variants:
-        raise ToolError(
-            f"VGC variant {requested} not in OTA. Available: {', '.join(variants)}"
-        )
-    return requested, "explicit"
+    if requested != "auto":
+        if requested not in variants:
+            raise ToolError(
+                f"VGC variant {requested} not in OTA. Available: {', '.join(variants)}"
+            )
+        note = "explicit"
+        if device_vgc and device_vgc != requested:
+            note = f"explicit, connected device reports {device_vgc}"
+        return requested, note
+
+    device_note = ""
+    if device_vgc:
+        if device_vgc in variants:
+            return device_vgc, f"connected device identity {device_vgc}"
+        matches = [item for item in variants if item.startswith(device_vgc + "_")]
+        if not matches:
+            matches = [item for item in variants if item.startswith(device_vgc)]
+        if matches:
+            return matches[0], f"connected device reports {device_vgc}"
+        device_note = f"connected device VGC {device_vgc} not in OTA; "
+
+    preferred = [item for item in variants if item.startswith("V000")]
+    chosen = preferred[0] if preferred else variants[0]
+    return chosen, device_note + f"auto, {chosen}"

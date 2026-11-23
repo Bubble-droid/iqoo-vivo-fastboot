@@ -9,6 +9,7 @@ The input is an *extracted* full OTA directory (the one that contains
     <out>/fix-oem.sh               # OEM identity repair
     <out>/common.sh                # shared helpers for the scripts above
     <out>/package.env              # title, model pattern, default OEM identity
+    <out>/device.json              # ADB probe plus bootloader pass
     <out>/firmware-update/
         boot.img vendor_boot.img dtbo.img recovery.img ...
         super.img                  # rebuilt with lpmake, sparse
@@ -22,21 +23,29 @@ The input is an *extracted* full OTA directory (the one that contains
 What the converter does:
 
 1. validates the OTA (block-based full package, device, stream files);
-2. rebuilds every dynamic partition from its transfer list, including split
+2. optionally probes an ADB-connected target device for its properties,
+   OEM/VGC identity and dynamic partitions; if ADB cannot read the exact
+   ``super`` size, the phone is rebooted to the bootloader, the remaining
+   variables are read there, and the phone is rebooted back to Android.  The
+   probe never writes to the phone, and its result can select the OEM/VGC
+   variants and size ``super.img`` to the actual hardware; an explicit
+   ``--device-size`` skips the bootloader pass;
+3. rebuilds every dynamic partition from its transfer list, including split
    ``.new.dat`` streams and single-file Brotli ``.new.dat.br`` streams;
-3. rebuilds ``vm-bootsys`` (block image that lives outside ``super``) when the
+4. rebuilds ``vm-bootsys`` (block image that lives outside ``super``) when the
    OTA provides it;
-4. builds a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
+5. builds a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
    including the ``oem`` and ``vgc`` variants selected on the command line
-   (defaults: a ``FULL_SC_NULL`` variant for the OTA device and ``V000``);
-5. extracts every OEM variant so ``fix-oem.sh`` can restore the identity;
-6. copies the physical images referenced by ``flash.sh`` (boot chain, modem,
+   (defaults: the connected device's identity, otherwise a ``FULL_SC_NULL``
+   variant for the OTA device and ``V000``);
+6. extracts every OEM variant so ``fix-oem.sh`` can restore the identity;
+7. copies the physical images referenced by ``flash.sh`` (boot chain, modem,
    xbl, ...), using the OTA filenames as the fallback list;
-7. verifies the result: ``e2fsck`` on every ext4 image, ``lpdump`` on the
+8. verifies the result: ``e2fsck`` on every ext4 image, ``lpdump`` on the
    generated super metadata, and ``avbtool verify_image
    --follow_chain_partitions`` for ``vbmeta``, ``vbmeta_system``,
    ``vbmeta_oem`` and ``vbmeta_vgc``;
-8. writes a SHA-256 manifest and a build report, and copies the package
+9. writes a SHA-256 manifest and a build report, and copies the package
    scripts from ``scripts/``.
 
 Nothing is flashed.  The output directory is left ready for ``./flash.sh`` or

@@ -22,25 +22,55 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--oem",
         default="auto",
-        help="OEM variant to place in super (NAME, auto, none)",
+        help=(
+            "OEM variant to place in super (NAME, auto, none); "
+            "auto prefers the identity reported by the ADB device"
+        ),
     )
     parser.add_argument(
         "--vgc",
         default="auto",
-        help="VGC variant to place in super (NAME, auto, none)",
+        help=(
+            "VGC variant to place in super (NAME, auto, none); "
+            "auto prefers the identity reported by the ADB device"
+        ),
     )
     parser.add_argument(
         "--device-size",
         type=parse_size,
         help=(
             "physical super partition size in bytes "
-            f"(default: {DEFAULT_DEVICE_SIZE} for iQOO 9 / 9 Pro)"
+            f"(default: size read from the ADB device or its bootloader, "
+            f"otherwise {DEFAULT_DEVICE_SIZE} for iQOO 9 / 9 Pro)"
         ),
     )
     parser.add_argument(
         "--scripts-dir",
         type=Path,
         help="package script templates (default: <repo>/scripts)",
+    )
+    parser.add_argument(
+        "--serial",
+        help=(
+            "serial of the ADB device to probe "
+            "(default: first connected ADB device)"
+        ),
+    )
+    device_group = parser.add_mutually_exclusive_group()
+    device_group.add_argument(
+        "--no-device",
+        action="store_true",
+        help="do not probe a connected device",
+    )
+    device_group.add_argument(
+        "--require-device",
+        action="store_true",
+        help="fail when no compatible ADB device is connected",
+    )
+    parser.add_argument(
+        "--skip-device-check",
+        action="store_true",
+        help="use a connected device even when it does not match the OTA",
     )
     parser.add_argument("--no-super", action="store_true", help="skip super.img")
     parser.add_argument(

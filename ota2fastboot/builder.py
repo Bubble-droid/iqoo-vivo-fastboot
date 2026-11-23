@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .constants import BLOCK, DEFAULT_DEVICE_SIZE, SUPER_GROUP
+from .device import (
+    DeviceInfo,
+    complete_with_bootloader,
+    device_matches_ota,
+    needs_bootloader,
+    probe_device,
+)
 from .errors import ToolError
 from .firmware import copy_firmware, firmware_size
 from .log import Log
@@ -38,6 +45,7 @@ class SuperPlan:
     vm_transfer: TransferList | None
     vm_size: int
     device_size: int
+    device_size_source: str
 
 
 def build(args: argparse.Namespace) -> int:
@@ -138,6 +146,7 @@ def plan_super(
     oem_arg: str,
     vgc_arg: str,
     device_size: int | None,
+    device: DeviceInfo | None,
     log: Log,
 ) -> SuperPlan:
     op_list = package / "dynamic_partitions_op_list"
@@ -151,8 +160,17 @@ def plan_super(
         if name in {"oem", "vgc"}:
             raise ToolError(f"unexpected {name} in the main op list")
 
-    oem_name, oem_note = choose_oem(oem_arg, package, props)
-    vgc_name, vgc_note = choose_vgc(vgc_arg, package)
+    oem_name, oem_note = choose_oem(
+        oem_arg,
+        package,
+        props,
+        device.oem if device else None,
+    )
+    vgc_name, vgc_note = choose_vgc(
+        vgc_arg,
+        package,
+        device.vgc if device else None,
+    )
 
     if oem_name != "none":
         oem_sizes, oem_groups = parse_op_list(
@@ -176,10 +194,35 @@ def plan_super(
     vm_size = vm_transfer.max_block * BLOCK if vm_transfer else 0
 
     if device_size is None:
-        device_size = DEFAULT_DEVICE_SIZE
-        log(
-            f"super size: default {fmt_size(device_size)} "
-            "(override with --device-size for other devices)"
+        if device and device.super_size:
+            device_size = device.super_size
+            device_size_source = (
+                f"connected device ({device.super_size_source or 'probe'})"
+            )
+            log(
+                f"super size: {fmt_size(device_size)} from connected device "
+                f"({device.super_size_source or 'probe'})"
+            )
+        else:
+            device_size = DEFAULT_DEVICE_SIZE
+            device_size_source = "built-in default"
+            log(
+                f"super size: default {fmt_size(device_size)} "
+                "(override with --device-size for other devices)"
+            )
+    else:
+        device_size_source = "explicit --device-size"
+        if device and device.super_size and device_size != device.super_size:
+            log(
+                f"super size: using --device-size {fmt_size(device_size)} "
+                f"(connected device reports {fmt_size(device.super_size)})"
+            )
+
+    total = sum(sizes.values())
+    if device_size < total:
+        raise ToolError(
+            f"super size {fmt_size(device_size)} is smaller than the dynamic "
+            f"partitions ({fmt_size(total)})"
         )
 
     return SuperPlan(
@@ -193,6 +236,7 @@ def plan_super(
         vm_transfer=vm_transfer,
         vm_size=vm_size,
         device_size=device_size,
+        device_size_source=device_size_source,
     )
 
 
@@ -411,6 +455,79 @@ def install_scripts(
     return script_names
 
 
+def _probe_target(
+    args: argparse.Namespace,
+    props: dict[str, str],
+    log: Log,
+) -> DeviceInfo | None:
+    log("=== target device ===")
+    if args.no_device:
+        log("  skipped (--no-device)")
+        return None
+
+    device = probe_device(args.serial, log)
+    if device is None:
+        if args.require_device:
+            raise ToolError("no ADB target device connected (--require-device)")
+        log("  no ADB device connected; using OTA metadata only")
+        return None
+
+    compatible, reason = device_matches_ota(device, props)
+    device.matched = compatible
+    device.note = reason
+    if compatible:
+        log(f"  model check: ok ({reason})")
+    elif args.skip_device_check:
+        log(f"  model check: MISMATCH ({reason})")
+        log("  using device data anyway (--skip-device-check)")
+    else:
+        log(f"  model check: MISMATCH ({reason})")
+        device.used = False
+        if args.require_device:
+            raise ToolError(f"connected device does not match OTA: {reason}")
+        log("  ignoring device-derived settings; package follows OTA metadata")
+
+    if device.used and needs_bootloader(device):
+        if args.device_size is None:
+            complete_with_bootloader(device, log)
+        else:
+            log("  --device-size is set; skipping the bootloader pass")
+
+    device.log_summary(log)
+    if device.used and device.unlocked is False:
+        log(
+            "  warning: the connected device is locked; "
+            "unlock the bootloader before flashing"
+        )
+    return device
+
+
+def _package_models(models: list[str], device: DeviceInfo | None) -> list[str]:
+    values = list(models)
+    if device and device.used:
+        for value in (device.model, device.product, device.device):
+            if value and value not in values:
+                values.append(value)
+    return values
+
+
+def _warn_build_age(
+    device: DeviceInfo,
+    props: dict[str, str],
+    log: Log,
+) -> None:
+    try:
+        device_timestamp = int(device.props.get("ro.build.date.utc", ""))
+        ota_timestamp = int(props.get("post-timestamp", ""))
+    except ValueError:
+        return
+    if device_timestamp > ota_timestamp:
+        log(
+            "  warning: connected device build is newer than the OTA "
+            f"({device_timestamp} > {ota_timestamp}); this is a downgrade"
+        )
+
+
 def _run(
     args: argparse.Namespace,
     package: Path,
@@ -424,11 +541,25 @@ def _run(
     log(f"device={props['pre-device']} build={props['post-build']}")
     log(f"output={display_out}")
 
-    plan = plan_super(package, props, args.oem, args.vgc, args.device_size, log)
+    probed_device = _probe_target(args, props, log)
+    device = probed_device if probed_device and probed_device.used else None
+    if device:
+        _warn_build_age(device, props, log)
+
+    plan = plan_super(
+        package,
+        props,
+        args.oem,
+        args.vgc,
+        args.device_size,
+        device,
+        log,
+    )
     models = model_candidates(props)
+    package_models = _package_models(models, device)
     log(f"oem variant: {plan.oem_name} ({plan.oem_note})")
     log(f"vgc variant: {plan.vgc_name} ({plan.vgc_note})")
-    log(f"model candidates: {', '.join(models) if models else 'unknown'}")
+    log(f"model candidates: {', '.join(package_models) if package_models else 'unknown'}")
     log(f"super device size: {plan.device_size} bytes ({fmt_size(plan.device_size)})")
     log(
         "super partitions: "
@@ -451,6 +582,13 @@ def _run(
     if args.dry_run:
         log("dry-run: plan validated, no partition images written")
         return 0
+
+    if probed_device is not None:
+        (out / "device.json").write_text(
+            json.dumps(probed_device.to_dict(), indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        log(f"device.json: {probed_device.mode} {probed_device.serial}")
 
     out_fw = out / "firmware-update"
     out_fw.mkdir(parents=True, exist_ok=True)
@@ -479,7 +617,13 @@ def _run(
     avb_results = verify_chain(out, out_fw, raw_parts, args, log)
 
     script_names = install_scripts(
-        out, scripts_dir, props, models, plan, args, log
+        out,
+        scripts_dir,
+        props,
+        package_models,
+        plan,
+        args,
+        log,
     )
 
     if not args.keep_raw:
@@ -493,6 +637,7 @@ def _run(
             package,
             props,
             plan.device_size,
+            plan.device_size_source,
             plan.sizes,
             plan.oem_name,
             plan.oem_note,
@@ -500,6 +645,7 @@ def _run(
             plan.vgc_note,
             [],  # filled after the manifest
             log,
+            device=probed_device,
         ),
         encoding="utf-8",
     )
@@ -509,6 +655,7 @@ def _run(
             package,
             props,
             plan.device_size,
+            plan.device_size_source,
             plan.sizes,
             plan.oem_name,
             plan.oem_note,
@@ -516,6 +663,7 @@ def _run(
             plan.vgc_note,
             manifest,
             log,
+            device=probed_device,
         ),
         encoding="utf-8",
     )
@@ -526,9 +674,12 @@ def _run(
         "device": props["pre-device"],
         "hardware_devices": props.get("hardware-device", ""),
         "model_candidates": models,
+        "package_models": package_models,
+        "target_device": probed_device.to_dict() if probed_device else None,
         "build": props["post-build"],
         "version": props.get("post-version"),
         "super_device_size": plan.device_size,
+        "super_device_size_source": plan.device_size_source,
         "super_partitions": plan.sizes,
         "oem_variant": plan.oem_name,
         "vgc_variant": plan.vgc_name,

@@ -12,6 +12,7 @@
 - 支持分段 `*.new.dat`、`*.new.dat.1..N`、单文件 Brotli `*.new.dat.br`
 - 重建 `vm-bootsys` 等 `super` 之外的块镜像（OTA 提供时）
 - 用 `lpmake` 生成与设备 `super` 分区同尺寸的稀疏 `super.img`
+- 构建时可选读取 ADB 连接的设备，用实际 `super` 大小、OEM/VGC 身份和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
 - 提取 `oem/` 下的全部 OEM 制式，供刷机后修复身份
 - 提取 `vgc/` 变体并写入 `super`
 - 复制 `flash.sh` 所需的 bootloader、modem、xbl、tz 等物理镜像
@@ -28,7 +29,7 @@
 | `lpmake` / `lpdump` | 生成并校验 `super.img` |
 | `e2fsck` | 校验 ext4 分区镜像 |
 | `avbtool` | 校验 AVB 签名与链式分区 |
-| `adb` / `fastboot` | 刷机时使用 |
+| `adb` / `fastboot` | 构建时通过 ADB 探测；必要时自动进 bootloader 读取，刷机时使用 |
 
 Debian / Ubuntu：
 
@@ -68,7 +69,15 @@ cd <repo>
 ./ota2fastboot.py /path/to/<full-ota>
 ```
 
-默认输出到 `out/<OTA 名称>-fastboot/`，其中 `<OTA 名称>` 取自 OTA 元数据的 `post-version`，而非来源目录名。例如 `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` 对应 `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`。先看计划、不写镜像：
+默认输出到 `out/<OTA 名称>-fastboot/`，其中 `<OTA 名称>` 取自 OTA 元数据的 `post-version`，而非来源目录名。例如 `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` 对应 `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`。
+
+若目标手机以 ADB 连接（已开启 USB 调试），转换器会先读取设备属性、分区和挂载信息，并优先使用设备报告的 OEM/VGC 身份与机型信息。ADB 普通权限读不到 `super` 精确大小时，会自动重启到 bootloader，用 `fastboot getvar` 读完剩余数据，再自动重启回 Android。整个过程不写入、不刷机、不解锁。跳过探测：
+
+```bash
+./ota2fastboot.py /path/to/<full-ota> --no-device
+```
+
+多设备时用 `--serial` 指定要探测的 ADB 设备。先看计划、不写镜像：
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
@@ -91,6 +100,7 @@ out/<OTA 名称>-fastboot/
 ├── BUILD.md                  # 构建报告：分区表、变体、校验结果
 ├── build.json                # 机器可读的构建参数与结果
 ├── build.log                 # 完整日志，路径已脱敏
+├── device.json               # ADB 与 bootloader 的探测结果（连接 ADB 设备时）
 ├── package.env               # 包标题、机型匹配、默认 OEM 身份
 ├── flash.sh                  # 完整线刷
 ├── flash-safe.sh             # 安全线刷：不写 bootloader / storage / modem
@@ -136,9 +146,13 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 | 选项 | 说明 |
 | --- | --- |
 | `--output DIR` | 指定输出目录 |
-| `--oem NAME\|auto\|none` | 放进 `super` 的 OEM 制式。默认 `auto`：优先匹配 OTA 机型的 `FULL_SC_NULL` |
-| `--vgc NAME\|auto\|none` | 放进 `super` 的 VGC 变体。默认 `auto`：优先 `V000` |
-| `--device-size SIZE` | 设备 `super` 分区大小。默认 `15032385536`（14 GiB，iQOO 9 / 9 Pro）；其他机型必须按实际分区调整 |
+| `--oem NAME\|auto\|none` | 放进 `super` 的 OEM 制式。默认 `auto`：优先使用 ADB 设备报告的 OEM 身份，否则匹配 OTA 机型的 `FULL_SC_NULL` |
+| `--vgc NAME\|auto\|none` | 放进 `super` 的 VGC 变体。默认 `auto`：优先使用 ADB 设备报告的 VGC 身份，否则优先 `V000` |
+| `--device-size SIZE` | 设备 `super` 分区大小。默认取 ADB 或 bootloader 读取的实际大小，否则 `15032385536`（14 GiB，iQOO 9 / 9 Pro） |
+| `--serial SERIAL` | 指定要探测的 ADB 设备；默认使用第一个 ADB 设备 |
+| `--no-device` | 不探测已连接设备 |
+| `--require-device` | 没有兼容的 ADB 设备时直接失败 |
+| `--skip-device-check` | 设备与 OTA 机型不匹配时仍使用设备数据 |
 | `--scripts-dir DIR` | 刷机脚本模板目录，默认仓库内 `scripts/` |
 | `--dry-run` | 只解析、校验并打印计划 |
 | `--resume` | 保留已有输出目录继续执行 |
@@ -162,7 +176,28 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 
 # 其他机型，指定 super 大小（字节或 14GiB 这类写法）
 ./ota2fastboot.py /path/to/<full-ota> --device-size 8GiB
+
+# 只探测指定 ADB 设备，并要求它必须存在且与 OTA 匹配
+./ota2fastboot.py /path/to/<full-ota> --serial <serial> --require-device
 ```
+
+## 读取 ADB 设备
+
+转换器只接受 **ADB 连接**。若手机只处于 Fastboot 模式，不会探测；请先启动 Android 并开启 USB 调试。探测不写入、不刷机、不解锁。
+
+| 阶段 | 读取内容 | 用途 |
+| --- | --- | --- |
+| ADB | `getprop`（机型、OEM/VGC 身份、Android 版本、指纹、解锁状态）、`/dev/block/mapper`、`df -k` | 选择 OEM/VGC、机型校验、`MODEL_REGEX`、构建报告 |
+| 自动进 bootloader | `fastboot getvar all`（`partition-size:super`、`current-slot`、`unlocked` 等）、`fastboot oem product-model` | ADB 读不到的 `super` 大小、当前槽位等；读完自动 `fastboot reboot` 回 Android |
+
+- ADB 取不到 `super` 精确大小时，才自动重启进 bootloader；若 ADB 已能读到，或显式传了 `--device-size`，则不会重启。
+- 进 bootloader 后若在超时内未出现，或读取失败，则继续使用 ADB 数据与默认值，不中断构建。
+- ADB 设备报告的 `super` 大小或 bootloader 读取值优先于内置默认值；显式传入 `--device-size` 时仍以命令行为准。
+- 设备报告的 OEM 身份存在于 OTA 中时，`--oem auto` 直接选它；VGC 同理。
+- 设备机型与 OTA 的 `pre-device` / `hardware-device` 不匹配时，默认忽略设备数据，继续按 OTA 元数据构建；`--skip-device-check` 强制使用设备数据，`--require-device` 要求必须有兼容的 ADB 设备。
+- 设备报告的 model / product 会追加到 `package.env` 的 `MODEL_REGEX`，让刷机时的机型检查接受真实设备。
+- 探测结果写入 `device.json`（含 `bootloader` 字段），并出现在 `BUILD.md` 与 `build.json` 中。
+- ADB 重启至 bootloader 再返回 Android 需要一定时间；期间请保持 USB 连接。
 
 ## 校验内容
 
@@ -174,7 +209,7 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
    - `vbmeta_oem`
    - `vbmeta_vgc`
 4. 脚本引用检查：`flash.sh` / `flash-safe.sh` 中每个必需镜像都存在
-5. 稀疏镜像展开尺寸等于 `--device-size`
+5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
 
 ```bash
@@ -183,7 +218,7 @@ sha256sum -c manifest.sha256
 
 ## 机型检查
 
-转换器从 OTA 元数据的 `pre-device` 与 `hardware-device` 推导机型列表，写入 `package.env` 的 `MODEL_REGEX`。刷机脚本读取手机 `fastboot oem product-model` 并比对。
+转换器从 OTA 元数据的 `pre-device` 与 `hardware-device` 推导机型列表，写入 `package.env` 的 `MODEL_REGEX`。若构建时探测到兼容设备，还会把设备报告的 model / product 追加进去。刷机脚本读取手机 `fastboot oem product-model` 并比对。
 
 确需跳过：
 
@@ -194,6 +229,7 @@ SKIP_MODEL_CHECK=1 ./flash-safe.sh
 ## 安全说明
 
 - 转换器 **不会刷机**，只生成包并校验。
+- 设备探测只读：不写入、不刷机、不解锁；必要时会自动重启进 bootloader 读取数据，然后重启回 Android。
 - `flash.sh` 会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用 `flash-safe.sh`。
 - `flash-safe.sh` 不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
@@ -212,7 +248,7 @@ SKIP_MODEL_CHECK=1 ./flash-safe.sh
 
 **系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`，选择与手机一致的制式。
 
-**生成的 `super.img` 尺寸不对**：用 `--device-size` 指定实际 `super` 分区大小。转换器不会读取本机已安装的包来猜测尺寸。
+**生成的 `super.img` 尺寸不对**：用 ADB 连接目标设备后让转换器自动读取；仅处于 Fastboot 模式时不会探测。也可用 `--device-size` 指定。转换器不会读取本机已安装的包来猜测尺寸。
 
 ## 目录说明
 
@@ -222,6 +258,7 @@ SKIP_MODEL_CHECK=1 ./flash-safe.sh
 | `ota2fastboot/` | 转换器源码包 |
 | `ota2fastboot/cli.py` | 命令行参数 |
 | `ota2fastboot/builder.py` | 构建流程 |
+| `ota2fastboot/device.py` | ADB 探测、必要时进 bootloader 补读、机型匹配 |
 | `ota2fastboot/ota.py` | OTA 元数据、transfer list、op list |
 | `ota2fastboot/stream.py` | `.new.dat` 解包 |
 | `ota2fastboot/sparse.py` | 稀疏镜像读写 |

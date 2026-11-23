@@ -6,9 +6,10 @@ BLOCK = 4096
 SPARSE_MAGIC = 0xED26FF3A
 
 # Default size of the physical ``super`` partition.  14 GiB is the layout used
-# by iQOO 9 / 9 Pro (PD2171 / PD2172).  Other devices must pass
-# --device-size; the converter never probes an installed package because a
-# clean checkout does not contain one.
+# by iQOO 9 / 9 Pro (PD2171 / PD2172).  When an ADB device is connected the
+# converter reads the real size, rebooting it to the bootloader when ADB cannot
+# provide it; otherwise other devices must pass --device-size.  A clean
+# checkout never contains an installed package to inspect.
 DEFAULT_DEVICE_SIZE = 0x380000000
 METADATA_SIZE = 65536
 METADATA_SLOTS = 3
