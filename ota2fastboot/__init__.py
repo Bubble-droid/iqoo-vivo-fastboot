@@ -4,21 +4,25 @@ The input is an *extracted* full OTA directory (the one that contains
 ``META-INF/com/android/metadata``, ``*.transfer.list``, ``*.new.dat*`` and
 ``firmware-update/``).  The output is a self-contained package::
 
-    <out>/flash.sh                 # full flash (bootloader included)
-    <out>/flash-safe.sh            # Android partitions only
+    <out>/README.md                # package usage notes (Chinese)
+    <out>/flash.sh                 # default: Android partitions only
+    <out>/flash-full.sh            # full flash (bootloader included)
+    <out>/flash-safe.sh            # alias for flash.sh
     <out>/fix-oem.sh               # OEM identity repair
+    <out>/verify.sh                # check manifest.sha256
     <out>/common.sh                # shared helpers for the scripts above
     <out>/package.env              # title, model pattern, default OEM identity
-    <out>/device.json              # ADB probe plus bootloader pass
+    <out>/meta/BUILD.md            # build report
+    <out>/meta/build.json          # machine-readable build result
+    <out>/meta/build.log           # build log (paths and serial redacted)
     <out>/firmware-update/
         boot.img vendor_boot.img dtbo.img recovery.img ...
         super.img                  # rebuilt with lpmake, sparse
-        oem/OEM_<NAME>.img         # every OEM variant in the OTA
+        oem/OEM_<NAME>.img         # selected OEM variant (all with --all-oem)
         oem/vbmeta_oem_<NAME>.img
-        vbmeta.img vbmeta_system.img vbmeta_oem.img vbmeta_vgc.img
+        vbmeta.img vbmeta_system.img vbmeta_vgc.img
     <out>/manifest.sha256
     <out>/manifest.json
-    <out>/BUILD.md
 
 What the converter does:
 
@@ -29,7 +33,8 @@ What the converter does:
    variables are read there, and the phone is rebooted back to Android.  The
    probe never writes to the phone, and its result can select the OEM/VGC
    variants and size ``super.img`` to the actual hardware; an explicit
-   ``--device-size`` skips the bootloader pass;
+   ``--device-size`` skips the bootloader pass.  The serial is masked in the
+   reports and log unless ``--keep-serial`` is used;
 3. rebuilds every dynamic partition from its transfer list, including split
    ``.new.dat`` streams and single-file Brotli ``.new.dat.br`` streams;
 4. rebuilds ``vm-bootsys`` (block image that lives outside ``super``) when the
@@ -38,20 +43,24 @@ What the converter does:
    including the ``oem`` and ``vgc`` variants selected on the command line
    (defaults: the connected device's identity, otherwise a ``FULL_SC_NULL``
    variant for the OTA device and ``V000``);
-6. extracts every OEM variant so ``fix-oem.sh`` can restore the identity;
+6. extracts the OEM variant placed in ``super`` so ``fix-oem.sh`` can restore
+   the identity; ``--all-oem`` packages every variant from the OTA;
 7. copies the physical images referenced by ``flash.sh`` (boot chain, modem,
    xbl, ...), using the OTA filenames as the fallback list;
 8. verifies the result: ``e2fsck`` on every ext4 image, ``lpdump`` on the
    generated super metadata, and ``avbtool verify_image
    --follow_chain_partitions`` for ``vbmeta``, ``vbmeta_system``,
    ``vbmeta_oem`` and ``vbmeta_vgc``;
-9. writes a SHA-256 manifest and a build report, and copies the package
-   scripts from ``scripts/``.
+9. writes the package README, a SHA-256 manifest, a build report and the
+   package scripts from ``scripts/``; with ``--target-platform windows`` and
+   ``--platform-tools-dir DIR`` the Windows adb/fastboot tools are bundled
+   under ``platform-tools/``.
 
 Nothing is flashed.  The output directory is left ready for ``./flash.sh`` or
-``./flash-safe.sh``.  Generated files never contain the absolute host path:
+``./flash-full.sh``.  Generated files never contain the absolute host path:
 the repository, OTA and output directories are redacted to ``<repo>``,
-``<ota>`` and ``<out>`` in the build log, and the reports use relative names.
+``<ota>`` and ``<out>`` in the build log, the device serial is masked by
+default, and the reports use relative names.
 
 Usage:
     ./ota2fastboot.py /path/to/PD2171_A_12.0.20.11.W10.V000L1-update-full

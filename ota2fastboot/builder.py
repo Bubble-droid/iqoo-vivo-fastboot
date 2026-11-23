@@ -22,11 +22,16 @@ from .firmware import copy_firmware, firmware_size
 from .log import Log
 from .ota import TransferList, parse_op_list, read_props
 from .package import check_script_contract, copy_scripts, write_package_env
-from .report import render_build_md, write_manifest
+from .report import (
+    collect_records,
+    render_build_md,
+    render_package_readme,
+    write_manifest,
+)
 from .sparse import probe_sparse_device_size
 from .stream import extract_partition
 from .super_image import build_super, lp_metadata
-from .util import fmt_size, free_space_check, reuse_image
+from .util import fmt_size, free_space_check, reuse_image, sha256_file
 from .variants import choose_oem, choose_vgc, model_candidates, oem_variants
 from .verify import fsck_images, verify_avb
 
@@ -66,7 +71,10 @@ def build(args: argparse.Namespace) -> int:
     if code is not None:
         return code
 
-    log = Log(out / "build.log")
+    log = Log(
+        out / "meta" / "build.log",
+        redact_serials=not getattr(args, "keep_serial", False),
+    )
     log.add_redaction(out, "<out>")
     log.add_redaction(package, "<ota>")
     log.add_redaction(REPO_ROOT, "<repo>")
@@ -123,6 +131,17 @@ def _prepare_output(args: argparse.Namespace, out: Path) -> int | None:
             )
             return 2
     out.mkdir(parents=True, exist_ok=True)
+    # Remove metadata written by older layouts so a resumed build does not
+    # carry stale reports into the new manifest.  A dry run must not modify
+    # an existing package.
+    if not args.dry_run:
+        for name in ("BUILD.md", "build.json", "build.log", "device.json"):
+            path = out / name
+            if path.is_file():
+                path.unlink()
+        legacy_oem_vbmeta = out / "firmware-update" / "vbmeta_oem.img"
+        if legacy_oem_vbmeta.is_file():
+            legacy_oem_vbmeta.unlink()
     return None
 
 
@@ -288,11 +307,20 @@ def extract_oem_variants(
     plan: SuperPlan,
     args: argparse.Namespace,
     log: Log,
-) -> None:
+) -> list[str]:
     log("=== OEM variants ===")
     oem_dir = out_fw / "oem"
     oem_dir.mkdir(exist_ok=True)
-    for variant in oem_variants(package):
+    variants = oem_variants(package)
+    if getattr(args, "all_oem", False):
+        selected = variants
+    elif plan.oem_name != "none":
+        selected = [plan.oem_name]
+    else:
+        selected = []
+    log(f"  packaging {len(selected)} of {len(variants)} variants")
+
+    for variant in selected:
         tl = package / "oem" / f"OEM_{variant}.transfer.list"
         sizes, _ = parse_op_list(package / "oem" / f"dynamic_partitions_op_list_{variant}")
         size = sizes.get("oem", 0)
@@ -306,15 +334,12 @@ def extract_oem_variants(
             raise ToolError(f"missing {vbmeta}")
         shutil.copy2(vbmeta, oem_dir / vbmeta.name)
 
-    chosen_vbmeta = oem_dir / f"vbmeta_oem_{plan.oem_name}.img"
-    if plan.oem_name != "none" and chosen_vbmeta.is_file():
-        shutil.copy2(chosen_vbmeta, out_fw / "vbmeta_oem.img")
-
     if plan.vgc_name != "none":
         vbmeta = package / "firmware-update" / f"vbmeta_vgc_{plan.vgc_name}.img"
         if not vbmeta.is_file():
             raise ToolError(f"missing {vbmeta}")
         shutil.copy2(vbmeta, out_fw / "vbmeta_vgc.img")
+    return selected
 
 
 def assemble_super(
@@ -391,6 +416,7 @@ def verify_chain(
     raw_parts: dict[str, Path],
     args: argparse.Namespace,
     log: Log,
+    oem_vbmeta: Path | None = None,
 ) -> dict[str, bool]:
     log("=== AVB chain verification ===")
     avb_files = {
@@ -417,8 +443,8 @@ def verify_chain(
     avb_targets = [("vbmeta", out_fw / "vbmeta.img")]
     if (out_fw / "vbmeta_system.img").is_file():
         avb_targets.append(("vbmeta_system", out_fw / "vbmeta_system.img"))
-    if (out_fw / "vbmeta_oem.img").is_file():
-        avb_targets.append(("vbmeta_oem", out_fw / "vbmeta_oem.img"))
+    if oem_vbmeta and oem_vbmeta.is_file():
+        avb_targets.append(("vbmeta_oem", oem_vbmeta))
     if (out_fw / "vbmeta_vgc.img").is_file():
         avb_targets.append(("vbmeta_vgc", out_fw / "vbmeta_vgc.img"))
 
@@ -528,6 +554,56 @@ def _warn_build_age(
         )
 
 
+def _target_platform(args: argparse.Namespace) -> str:
+    if args.target_platform:
+        return args.target_platform
+    if sys.platform.startswith("win"):
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "linux"
+
+
+def _install_platform_tools(
+    out: Path,
+    args: argparse.Namespace,
+    platform: str,
+    log: Log,
+) -> dict | None:
+    log("=== target platform ===")
+    log(f"  {platform}")
+    directory = getattr(args, "platform_tools_dir", None)
+    if platform != "windows":
+        if directory is not None:
+            raise ToolError("--platform-tools-dir requires --target-platform windows")
+        log("  platform-tools: not bundled for this target")
+        return None
+    if directory is None:
+        log("  platform-tools: skipped (no --platform-tools-dir)")
+        return None
+
+    source = directory.resolve()
+    if not source.is_dir():
+        raise ToolError(f"platform-tools directory not found: {source}")
+    names = {path.name for path in source.iterdir()}
+    if "fastboot.exe" not in names and "fastboot" not in names:
+        raise ToolError(f"platform-tools directory has no fastboot: {source}")
+    destination = out / "platform-tools"
+    shutil.copytree(source, destination, dirs_exist_ok=True)
+    files = [path for path in destination.rglob("*") if path.is_file()]
+    size = sum(path.stat().st_size for path in files)
+    log(f"  platform-tools: {len(files)} files, {fmt_size(size)}")
+    return {"files": len(files), "size": size}
+
+
+def _record(out: Path, path: Path) -> dict:
+    return {
+        "file": path.relative_to(out).as_posix(),
+        "size": path.stat().st_size,
+        "sha256": sha256_file(path),
+    }
+
+
 def _run(
     args: argparse.Namespace,
     package: Path,
@@ -568,6 +644,15 @@ def _run(
         )
     )
 
+    target_platform = _target_platform(args)
+    if args.platform_tools_dir is not None:
+        if target_platform != "windows":
+            raise ToolError("--platform-tools-dir requires --target-platform windows")
+        if not args.platform_tools_dir.is_dir():
+            raise ToolError(
+                f"platform-tools directory not found: {args.platform_tools_dir}"
+            )
+
     data_bytes = sum(plan.sizes.values())
     need = (
         data_bytes
@@ -583,13 +668,6 @@ def _run(
         log("dry-run: plan validated, no partition images written")
         return 0
 
-    if probed_device is not None:
-        (out / "device.json").write_text(
-            json.dumps(probed_device.to_dict(), indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        log(f"device.json: {probed_device.mode} {probed_device.serial}")
-
     out_fw = out / "firmware-update"
     out_fw.mkdir(parents=True, exist_ok=True)
     raw_dir = out / ".raw"
@@ -599,7 +677,9 @@ def _run(
     copy_firmware(package, out_fw, log)
 
     raw_parts = extract_partitions(package, out_fw, raw_dir, plan, args, log)
-    extract_oem_variants(package, out_fw, raw_parts, plan, args, log)
+    packaged_oem = extract_oem_variants(
+        package, out_fw, raw_parts, plan, args, log
+    )
 
     log("=== filesystem check ===")
     fsck_targets = {
@@ -614,7 +694,14 @@ def _run(
         fsck_results = fsck_images(fsck_targets, log)
 
     assemble_super(out_fw, raw_parts, plan, args, log)
-    avb_results = verify_chain(out, out_fw, raw_parts, args, log)
+    oem_vbmeta = (
+        out_fw / "oem" / f"vbmeta_oem_{plan.oem_name}.img"
+        if plan.oem_name != "none"
+        else None
+    )
+    avb_results = verify_chain(
+        out, out_fw, raw_parts, args, log, oem_vbmeta=oem_vbmeta
+    )
 
     script_names = install_scripts(
         out,
@@ -626,12 +713,43 @@ def _run(
         log,
     )
 
+    platform_tools = _install_platform_tools(out, args, target_platform, log)
     if not args.keep_raw:
         shutil.rmtree(raw_dir, ignore_errors=True)
     else:
         log("raw images kept in .raw/")
 
-    build_md = out / "BUILD.md"
+    model_regex = "|".join(package_models)
+    if script_names:
+        (out / "README.md").write_text(
+            render_package_readme(
+                package=package,
+                props=props,
+                model_regex=model_regex,
+                oem_name=plan.oem_name,
+                vgc_name=plan.vgc_name,
+                oem_variant_count=len(packaged_oem),
+                all_oem=getattr(args, "all_oem", False),
+                device_size=plan.device_size,
+                target_platform=target_platform,
+                platform_tools_bundled=bool(platform_tools),
+            ),
+            encoding="utf-8",
+        )
+        log("README.md: package usage notes")
+
+    # Hash the payload once, then add the two generated report files.  The
+    # build log is excluded because it is still open.
+    payload_records = collect_records(out)
+    firmware_records = [
+        record
+        for record in payload_records
+        if record["file"].startswith("firmware-update/")
+    ]
+
+    meta_dir = out / "meta"
+    meta_dir.mkdir(exist_ok=True)
+    build_md = meta_dir / "BUILD.md"
     build_md.write_text(
         render_build_md(
             package,
@@ -643,27 +761,12 @@ def _run(
             plan.oem_note,
             plan.vgc_name,
             plan.vgc_note,
-            [],  # filled after the manifest
+            firmware_records,
             log,
             device=probed_device,
-        ),
-        encoding="utf-8",
-    )
-    manifest = write_manifest(out, log)
-    build_md.write_text(
-        render_build_md(
-            package,
-            props,
-            plan.device_size,
-            plan.device_size_source,
-            plan.sizes,
-            plan.oem_name,
-            plan.oem_note,
-            plan.vgc_name,
-            plan.vgc_note,
-            manifest,
-            log,
-            device=probed_device,
+            keep_serial=args.keep_serial,
+            target_platform=target_platform,
+            oem_variant_count=len(packaged_oem),
         ),
         encoding="utf-8",
     )
@@ -675,26 +778,43 @@ def _run(
         "hardware_devices": props.get("hardware-device", ""),
         "model_candidates": models,
         "package_models": package_models,
-        "target_device": probed_device.to_dict() if probed_device else None,
+        "target_device": (
+            probed_device.to_dict(keep_serial=args.keep_serial)
+            if probed_device
+            else None
+        ),
+        "serial_redacted": bool(probed_device) and not args.keep_serial,
         "build": props["post-build"],
         "version": props.get("post-version"),
+        "target_platform": target_platform,
+        "platform_tools": platform_tools,
         "super_device_size": plan.device_size,
         "super_device_size_source": plan.device_size_source,
         "super_partitions": plan.sizes,
         "oem_variant": plan.oem_name,
+        "oem_variants_packaged": packaged_oem,
+        "all_oem_variants": getattr(args, "all_oem", False),
         "vgc_variant": plan.vgc_name,
         "scripts": script_names,
         "fsck": fsck_results,
         "avb": avb_results,
     }
-    (out / "build.json").write_text(
+    build_json = meta_dir / "build.json"
+    build_json.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
+    records = sorted(
+        payload_records
+        + [_record(out, build_md), _record(out, build_json)],
+        key=lambda record: record["file"],
+    )
+    manifest = write_manifest(out, log, records)
+
     log("=== done ===")
     log(f"package: {display_out}")
     log(f"size: {fmt_size(sum(record['size'] for record in manifest))}")
-    log(f"run: cd {display_out} && chmod +x ./*.sh && ./flash-safe.sh")
-    log("full flash: ./flash.sh (writes bootloader and UFS firmware)")
+    log(f"run: cd {display_out} && chmod +x ./*.sh && ./verify.sh && ./flash.sh")
+    log("full flash: ./flash-full.sh (writes bootloader and UFS firmware)")
     return 0

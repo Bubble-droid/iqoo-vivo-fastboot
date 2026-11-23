@@ -9,8 +9,9 @@
 #   ./fix-oem.sh --filter CT-BMW
 #   ./fix-oem.sh -s <serial>         extra arguments go to fastboot
 #
-# The package stores every OEM variant extracted from the OTA, so the correct
-# identity can be restored even when the phone reports a damaged system.
+# The package stores the OEM variants selected at build time: the variant used
+# for super by default, or every variant with --all-oem.  The correct identity
+# can be restored even when the phone reports a damaged system.
 
 set -euo pipefail
 
@@ -25,7 +26,7 @@ ASSUME_YES=0
 LIST_ONLY=0
 
 usage() {
-    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ "$#" -gt 0 ]; do

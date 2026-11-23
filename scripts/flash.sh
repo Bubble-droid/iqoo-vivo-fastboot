@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# Full fastboot flashing script for a generated vivo/iQOO package.
+# Default fastboot flashing script for a generated vivo/iQOO package.
 #
-# Writes every partition produced by ota2fastboot.py, including the bootloader
-# chain (xbl, abl, tz, hyp, ...) and the UFS firmware (storage).  An interrupted
-# bootloader write can leave the phone unbootable without EDL recovery.  Use
-# ./flash-safe.sh when you want an AP-only flash that keeps fastboot reachable.
+# Writes only Android partitions (boot chain + dynamic super) and the AVB
+# metadata that belongs to them.  It never writes:
+#   xbl, xbl_config, abl, tz, hyp, aop, devcfg, keymaster, uefisecapp,
+#   uefi, shrm, cpucp, imagefv, multiimg*, storsec, featenabler, toolsfv,
+#   xbl_ramdump, storage (UFS firmware), modem, dsp, bluetooth, qupfw.
+#
+# If a write fails, the bootloader and fastboot are still intact, so the phone
+# can normally be recovered by flashing the previous package.
+# Use ./flash-full.sh for a complete flash that includes the bootloader chain
+# and the UFS firmware.
+# Set FLASH_SAFE_WITH_MODEM=1 to include the modem group as well.
 
 set -euo pipefail
 
@@ -19,61 +26,43 @@ load_package_env "$SCRIPT_DIR"
 
 require_fastboot
 require_tty
-set_title "${PACKAGE_TITLE:-vivo/iQOO fastboot package}"
+set_title "${PACKAGE_TITLE:-vivo/iQOO fastboot package} (safe)"
 
-FLASH_ITEMS=(
+SAFE_ITEMS=(
     "boot|firmware-update/boot.img"
-    "modem|firmware-update/NON-HLOS.bin|optional"
-    "dsp|firmware-update/dspso.bin|optional"
-    "bluetooth|firmware-update/BTFM.bin|optional"
     "dtbo|firmware-update/dtbo.img"
-    "qupfw|firmware-update/qupv3fw.elf|optional"
-    "keymaster|firmware-update/keymint.mbn|optional"
-    "uefisecapp|firmware-update/uefi_sec.mbn|optional"
-    "uefi|firmware-update/uefi.elf|optional"
-    "shrm|firmware-update/shrm.elf|optional"
-    "multiimgoem|firmware-update/multi_image.mbn|optional"
-    "multiimgqti|firmware-update/multi_image_qti.mbn|optional"
-    "cpucp|firmware-update/cpucp.elf|optional"
-    "abl|firmware-update/abl.elf"
-    "tz|firmware-update/tz.mbn"
-    "aop|firmware-update/aop.mbn"
-    "aop_config|firmware-update/aop_devcfg.mbn|optional"
-    "imagefv|firmware-update/imagefv.elf|optional"
-    "hyp|firmware-update/hypvm.mbn"
-    "xbl_config|firmware-update/xbl_config.elf"
-    "xbl|firmware-update/xbl_s.melf"
-    "storage|firmware-update/firmware.bin|optional"
-    "featenabler|firmware-update/featenabler.mbn|optional"
-    "vbmeta|firmware-update/vbmeta.img"
-    "vbmeta_system|firmware-update/vbmeta_system.img|optional"
     "vendor_boot|firmware-update/vendor_boot.img"
     "recovery|firmware-update/recovery.img|optional"
-    "toolsfv|firmware-update/tools.fv|optional"
-    "xbl_ramdump|firmware-update/XblRamdump.elf|optional"
-    "storsec|firmware-update/storsec.mbn|optional"
-    "devcfg|firmware-update/devcfg_overlay1.mbn|optional"
-    "devcfg|firmware-update/devcfg.mbn"
     "vm-bootsys|firmware-update/vm-bootsys.img|optional"
-    "vbmeta_oem|firmware-update/vbmeta_oem.img|optional"
+    "vbmeta|firmware-update/vbmeta.img"
+    "vbmeta_system|firmware-update/vbmeta_system.img|optional"
     "vbmeta_vgc|firmware-update/vbmeta_vgc.img|optional"
-    "super|firmware-update/super.img"
 )
 
-preflight_items "${FLASH_ITEMS[@]}"
+if [ "${FLASH_SAFE_WITH_MODEM:-0}" = "1" ]; then
+    SAFE_ITEMS+=(
+        "modem|firmware-update/NON-HLOS.bin|optional"
+        "dsp|firmware-update/dspso.bin|optional"
+        "bluetooth|firmware-update/BTFM.bin|optional"
+        "qupfw|firmware-update/qupv3fw.elf|optional"
+    )
+    echo " -- FLASH_SAFE_WITH_MODEM=1: the modem group will be written too."
+fi
+
+SAFE_ITEMS+=("super|firmware-update/super.img")
+
+preflight_items "${SAFE_ITEMS[@]}"
 
 echo
-echo " -- This is a FULL flash: bootloader and UFS firmware will be written."
-echo " -- An interrupted bootloader write can make the phone unrecoverable"
-echo " -- without EDL. Keep the USB cable connected and do not touch the phone."
-echo " -- For an AP-only flash that keeps fastboot reachable, use ./flash-safe.sh."
+echo " -- SAFE flash: Android partitions only."
+echo " -- The bootloader, bootloader configuration, UFS firmware and modem"
+echo " -- firmware are NOT touched, so fastboot remains reachable if this"
+echo " -- flash fails or the new system does not boot."
+echo " -- The currently installed bootloader stays in place. If the new system"
+echo " -- requires a newer bootloader, it may stop at the boot logo; recover by"
+echo " -- flashing the previous package."
 echo
-echo " -- Before use, make sure the phone is connected and either booted with"
-echo " -- USB debugging enabled, or already in Fastboot mode."
-echo " -- In ADB mode the script records the real OEM identity first, so the"
-echo " -- matching OEM partition can be restored after flashing."
-echo
-if ! confirm "Start flashing now?" y; then
+if ! confirm "Start safe flashing now?" y; then
     echo "-- Canceled."
     exit 0
 fi
@@ -98,7 +87,7 @@ sleep 1
 cls
 echo
 
-flash_items "${FLASH_ITEMS[@]}"
+flash_items "${SAFE_ITEMS[@]}"
 repair_oem
 final_reboot
 pause

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Shared helpers for the generated vivo/iQOO fastboot package.
-# Sourced by flash.sh, flash-safe.sh and fix-oem.sh.
+# Sourced by flash.sh, flash-full.sh, flash-safe.sh and fix-oem.sh.
 #
 # All scripts run from the package root and expect:
 #   package.env                  generated metadata (title, model pattern)
 #   firmware-update/             partition images
-#   firmware-update/oem/         optional OEM repair images
+#   firmware-update/oem/         OEM repair images
+#   platform-tools/              optional bundled adb/fastboot (Windows target)
 #
 # The helpers never embed an absolute host path in the package.
 
@@ -79,6 +80,18 @@ load_package_env() {
         # shellcheck disable=SC1091
         . "$dir/package.env"
     fi
+}
+
+setup_bundled_tools() {
+    local dir="${SCRIPT_DIR:-}/platform-tools"
+    [ -n "${SCRIPT_DIR:-}" ] && [ -d "$dir" ] || return 0
+    case ":$PATH:" in
+    *":$dir:"*) ;;
+    *)
+        PATH="$dir:$PATH"
+        export PATH
+        ;;
+    esac
 }
 
 require_fastboot() {
@@ -347,3 +360,6 @@ final_reboot() {
         die "reboot error"
     fi
 }
+
+# A Windows-target package may ship platform-tools next to the scripts.
+setup_bundled_tools

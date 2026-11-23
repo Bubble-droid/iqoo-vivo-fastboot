@@ -1,4 +1,4 @@
-"""Build log with host-path redaction."""
+"""Build log with host-path and optional serial redaction."""
 
 from __future__ import annotations
 
@@ -6,18 +6,33 @@ import time
 from pathlib import Path
 
 
+def mask_serial(serial: str | None) -> str:
+    """Hide all but the last four characters of a device serial."""
+    if not serial:
+        return ""
+    if len(serial) <= 4:
+        return "*" * len(serial)
+    return "*" * (len(serial) - 4) + serial[-4:]
+
+
 class Log:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, redact_serials: bool = True):
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
         self.fh = path.open("w", encoding="utf-8")
         self.redactions: list[tuple[str, str]] = []
+        self.redact_serials = redact_serials
 
     def add_redaction(self, value: Path | str, token: str) -> None:
         text = str(value)
         if text:
             self.redactions.append((text, token))
             self.redactions.sort(key=lambda item: len(item[0]), reverse=True)
+
+    def register_serial(self, serial: str | None) -> None:
+        """Redact a serial from this point on, unless --keep-serial was used."""
+        if self.redact_serials and serial:
+            self.add_redaction(serial, mask_serial(serial))
 
     def redact(self, text: str) -> str:
         for needle, token in self.redactions:

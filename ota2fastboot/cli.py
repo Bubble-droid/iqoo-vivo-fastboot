@@ -45,6 +45,38 @@ def make_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--all-oem",
+        action="store_true",
+        help=(
+            "package every OEM repair variant from the OTA; by default only the "
+            "variant placed in super is kept (use fix-oem.sh for the rest)"
+        ),
+    )
+    parser.add_argument(
+        "--target-platform",
+        choices=("linux", "windows", "macos"),
+        help=(
+            "target platform for the package (default: the build host); "
+            "windows packages may bundle platform-tools"
+        ),
+    )
+    parser.add_argument(
+        "--platform-tools-dir",
+        type=Path,
+        help=(
+            "directory with adb.exe/fastboot.exe to copy into a windows-target "
+            "package; skipped when omitted"
+        ),
+    )
+    parser.add_argument(
+        "--keep-serial",
+        action="store_true",
+        help=(
+            "write the device serial in full to the reports and log; by default "
+            "only the last four characters are kept"
+        ),
+    )
+    parser.add_argument(
         "--scripts-dir",
         type=Path,
         help="package script templates (default: <repo>/scripts)",

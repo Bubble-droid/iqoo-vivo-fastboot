@@ -38,8 +38,8 @@ BOOTLOADER_WAIT = 60
 ANDROID_WAIT = 90
 
 # Only the properties that are useful for package selection and provenance are
-# stored in device.json.  The full getprop table is far too large and contains
-# unrelated user data.
+# stored in meta/build.json.  The full getprop table is far too large and
+# contains unrelated user data.
 PROP_KEYS = (
     "ro.product.device",
     "ro.product.name",
@@ -173,10 +173,24 @@ class DeviceInfo:
             if values:
                 log("  bootloader: " + ", ".join(values))
 
-    def to_dict(self) -> dict:
-        return {
+    def to_dict(self, keep_serial: bool = True) -> dict:
+        from .log import mask_serial
+
+        def scrub(value):
+            if keep_serial or not self.serial:
+                return value
+            masked = mask_serial(self.serial)
+            if isinstance(value, str):
+                return value.replace(self.serial, masked)
+            if isinstance(value, dict):
+                return {key: scrub(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        data = {
             "mode": self.mode,
-            "serial": self.serial,
+            "serial": self.serial if keep_serial else mask_serial(self.serial),
             "probed_at": self.probed_at,
             "product": self.product,
             "model": self.model,
@@ -199,6 +213,7 @@ class DeviceInfo:
             "note": self.note,
             "properties": self.props,
         }
+        return {key: scrub(value) for key, value in data.items()}
 
 
 def probe_device(serial: str | None, log: Log) -> DeviceInfo | None:
@@ -212,6 +227,7 @@ def probe_device(serial: str | None, log: Log) -> DeviceInfo | None:
     adb_devices = _adb_devices()
 
     if serial:
+        log.register_serial(serial)
         if any(name == serial and state == "device" for name, state in adb_devices):
             log(f"  found ADB device {serial}")
             return _probe_adb(serial)
@@ -234,6 +250,7 @@ def probe_device(serial: str | None, log: Log) -> DeviceInfo | None:
         if state == "device" and not name.startswith("emulator-")
     ]
     if adb_ready:
+        log.register_serial(adb_ready[0])
         if len(adb_ready) > 1:
             log(
                 f"  multiple ADB devices ({', '.join(adb_ready)}); "
@@ -326,6 +343,7 @@ def _wait_for_fastboot(
             return serial
         new_devices = [name for name in names if name not in before]
         if len(new_devices) == 1:
+            log.register_serial(new_devices[0])
             log(f"  bootloader reports serial {new_devices[0]}")
             return new_devices[0]
         time.sleep(1)
