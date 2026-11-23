@@ -4,6 +4,10 @@
 
 `ota2fastboot.py` converts an **extracted** vivo / iQOO full OTA (block mode) into a self-contained fastboot package. The package ships platform-native flash scripts: bash for Linux / macOS, and PowerShell with `.cmd` launchers for Windows. The default entry point is the safe `./flash.sh` (Windows: `.\flash.cmd`); use `./flash-full.sh` (Windows: `.\flash-full.cmd`) for a full flash. It rebuilds every dynamic partition, creates a sparse `super.img` with `lpmake`, extracts the selected OEM variant, copies the physical images required by the flash scripts, and verifies the result with `e2fsck`, `lpdump`, `avbtool` and SHA-256 manifests.
 
+> **Disclaimer**
+>
+> This project and the packages it generates have only been tested by flashing a real iQOO 9 Pro. A successful test does not mean other models can be flashed safely, nor does it guarantee that the same model (other units, variants or firmware versions) can be flashed safely. Flashing carries risks such as bricking and data loss; whether to flash is your own decision, and you accept the risk and consequences.
+
 ---
 
 ## Features

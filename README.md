@@ -4,6 +4,10 @@
 
 `ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本：Linux / macOS 为 bash，Windows 为原生 PowerShell（附 `.cmd` 启动器）。默认入口是安全线刷 `./flash.sh`（Windows 为 `.\flash.cmd`），完整线刷用 `./flash-full.sh`（Windows 为 `.\flash-full.cmd`）。
 
+> **免责声明**
+>
+> 本项目及生成的刷机包仅在 iQOO 9 Pro 上完成过实机刷入测试。测试通过不代表其他机型可以安全刷入，也不代表同机型（其他批次、制式或系统版本）一定可以安全刷入。刷机存在变砖、数据丢失等风险；是否刷入由你自行判断，风险与后果由你自行承担。
+
 ---
 
 ## 功能
