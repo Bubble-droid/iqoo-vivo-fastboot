@@ -2,7 +2,7 @@
 
 **中文** | [English](README.en.md)
 
-`ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本，可直接 `./flash.sh`（安全默认）或 `./flash-full.sh`（完整线刷）。
+`ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本：Linux / macOS 为 bash，Windows 为原生 PowerShell（附 `.cmd` 启动器）。默认入口是安全线刷 `./flash.sh`（Windows 为 `.\flash.cmd`），完整线刷用 `./flash-full.sh`（Windows 为 `.\flash-full.cmd`）。
 
 ---
 
@@ -15,9 +15,10 @@
 - 构建时可选读取 ADB 连接的设备，用实际 `super` 大小、OEM/VGC 身份和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
 - 提取选中 OEM 制式的修复镜像；加 `--all-oem` 时提取全部制式
 - 提取 `vgc/` 变体并写入 `super`
-- 复制 `flash-full.sh` 所需的 bootloader、modem、xbl、tz 等物理镜像
-- 自动生成包内 `README.md`、`package.env`、刷机脚本、`verify.sh`、构建报告和 SHA-256 清单
-- 可选目标平台：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
+- 复制完整线刷脚本所需的 bootloader、modem、xbl、tz 等物理镜像
+- 自动生成包内 `README.md`、`package.env`、平台对应的刷机脚本、校验脚本、构建报告和 SHA-256 清单
+- 目标平台决定脚本类型：`linux` / `macos` 为 bash，`windows` 为原生 PowerShell + `.cmd`
+- 可选 Windows 目标：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
 - 构建日志与报告默认脱敏设备序列号，只保留后四位；`--keep-serial` 可关闭
 - 校验：`e2fsck`、`lpdump`、AVB 链、脚本引用完整性、稀疏镜像展开尺寸
 - 生成文件中不包含构建机的绝对路径
@@ -32,6 +33,8 @@
 | `e2fsck` | 校验 ext4 分区镜像 |
 | `avbtool` | 校验 AVB 签名与链式分区 |
 | `adb` / `fastboot` | 构建时通过 ADB 探测；必要时自动进 bootloader 读取，刷机时使用 |
+| `bash` | Linux / macOS 包的刷机脚本 |
+| PowerShell 5.1+ | Windows 包的刷机脚本；Windows 10/11 自带 |
 
 Debian / Ubuntu：
 
@@ -85,7 +88,9 @@ cd <repo>
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
 ```
 
-制作完成后：
+制作完成后，按包的目标平台运行对应脚本。
+
+Linux / macOS 包（默认跟随制作系统）：
 
 ```bash
 cd out/<OTA 名称>-fastboot
@@ -96,7 +101,21 @@ chmod +x ./*.sh
 ./flash-full.sh   # 完整线刷，包含 bootloader 与 UFS 固件
 ```
 
+Windows 包（`--target-platform windows`）：
+
+```powershell
+cd out\<OTA 名称>-fastboot
+
+.\verify.cmd      # 校验 manifest.sha256
+.\flash.cmd       # 默认：只刷 Android 分区
+.\flash-full.cmd  # 完整线刷，包含 bootloader 与 UFS 固件
+```
+
+`.cmd` 启动器会以 `-ExecutionPolicy Bypass` 调用同名 `.ps1`，无需修改系统执行策略。
+
 ## 输出结构
+
+Linux / macOS 包：
 
 ```text
 out/<OTA 名称>-fastboot/
@@ -114,7 +133,6 @@ out/<OTA 名称>-fastboot/
 │   ├── BUILD.md              # 构建报告：分区表、变体、校验结果
 │   ├── build.json            # 机器可读的构建参数与结果（含设备探测）
 │   └── build.log             # 完整日志；主机路径与序列号默认脱敏
-├── platform-tools/           # 可选：仅 Windows 目标且指定了目录
 └── firmware-update/
     ├── boot.img vendor_boot.img dtbo.img recovery.img vm-bootsys.img
     ├── vbmeta.img vbmeta_system.img vbmeta_vgc.img
@@ -125,32 +143,77 @@ out/<OTA 名称>-fastboot/
         └── vbmeta_oem_<选中制式>.img
 ```
 
+Windows 包：
+
+```text
+out/<OTA 名称>-fastboot/
+├── README.md
+├── package.env
+├── flash.ps1 / flash.cmd                  # 默认安全线刷
+├── flash-full.ps1 / flash-full.cmd        # 完整线刷
+├── flash-safe.ps1 / flash-safe.cmd        # flash 的兼容别名
+├── fix-oem.ps1 / fix-oem.cmd              # OEM 身份修复
+├── verify.ps1 / verify.cmd                # 按 manifest.sha256 校验包
+├── common.ps1                             # 上面脚本共用的函数
+├── manifest.sha256
+├── manifest.json
+├── meta/
+│   ├── BUILD.md
+│   ├── build.json
+│   └── build.log
+├── platform-tools/           # 可选：指定 --platform-tools-dir 时附带
+└── firmware-update/
+    ├── ... 与 Linux 包相同 ...
+    └── oem/
+        ├── OEM_<选中制式>.img
+        └── vbmeta_oem_<选中制式>.img
+```
+
 `manifest.sha256` 覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
 `device-info.txt` 在刷机时写入包目录，记录刷机前的机型、OEM、Android 版本和包版本。
 
-## 三个刷机脚本
+## 刷机与校验脚本
 
-| 脚本 | 写入内容 | 风险 |
+| 功能 | Linux / macOS | Windows |
 | --- | --- | --- |
-| `flash.sh` | `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、`vbmeta*`、`super`、OEM 修复 | 低。失败后仍可进入 Fastboot，用旧包回滚 |
-| `flash-full.sh` | 完整包，包括 `xbl`、`abl`、`tz`、`hyp`、`storage` 等 | 高。bootloader 写入中断可能无法用 EDL 之外的方式恢复 |
-| `fix-oem.sh` | `vbmeta_oem` + `oem` | 低。只修复制式，不碰系统 |
+| 默认安全线刷 | `flash.sh` | `flash.ps1` 或 `flash.cmd` |
+| 完整线刷 | `flash-full.sh` | `flash-full.ps1` 或 `flash-full.cmd` |
+| OEM 修复 | `fix-oem.sh` | `fix-oem.ps1` 或 `fix-oem.cmd` |
+| 校验包 | `verify.sh` | `verify.ps1` 或 `verify.cmd` |
+| 旧名称别名 | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
 
-`flash-safe.sh` 为旧名称，保留为 `flash.sh` 的兼容别名。
+安全线刷会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、
+`vbmeta*`、`super`，并在最后修复 OEM 身份，风险低：失败后仍可进入 Fastboot。
+完整线刷额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等，风险高：bootloader
+写入中断可能无法用 EDL 之外的方式恢复。
 
-`flash.sh` 默认不写 modem 组。需要时：
+`flash-safe.sh` / `flash-safe.cmd` 为旧名称，保留为 `flash` 的兼容别名。
+
+默认不写 modem 组。需要时：
 
 ```bash
 FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 ```
 
-`fix-oem.sh` 支持：
+```powershell
+$env:FLASH_SAFE_WITH_MODEM = "1"
+.\flash.cmd
+```
+
+OEM 修复：
 
 ```bash
 ./fix-oem.sh --list
 ./fix-oem.sh --name PD2171_CN-ZH_FULL_SC_NULL
 ./fix-oem.sh --name BMW --yes
 ./fix-oem.sh --filter CT-BMW
+```
+
+```powershell
+.\fix-oem.cmd --list
+.\fix-oem.cmd --name PD2171_CN-ZH_FULL_SC_NULL
+.\fix-oem.cmd --name BMW --yes
+.\fix-oem.cmd --filter CT-BMW
 ```
 
 默认只打包 `super` 使用的 OEM 变体。需要包内保留全部制式时，构建时加
@@ -167,12 +230,12 @@ FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 | `--serial SERIAL` | 指定要探测的 ADB 设备；默认使用第一个 ADB 设备 |
 | `--keep-serial` | 在报告与日志中保留完整设备序列号；默认只保留后四位 |
 | `--all-oem` | 打包 OTA 内全部 OEM 修复变体；默认只保留写入 `super` 的变体 |
-| `--target-platform PLATFORM` | 包目标平台：`linux`、`windows`、`macos`；默认跟随制作系统 |
+| `--target-platform PLATFORM` | 包目标平台：`linux`、`windows`、`macos`；默认跟随制作系统。`linux` / `macos` 生成 bash 脚本，`windows` 生成 PowerShell + `.cmd` |
 | `--platform-tools-dir DIR` | 仅 Windows 目标：把该目录的 `adb.exe` / `fastboot.exe` 复制到包内 `platform-tools/`；省略则跳过 |
 | `--no-device` | 不探测已连接设备 |
 | `--require-device` | 没有兼容的 ADB 设备时直接失败 |
 | `--skip-device-check` | 设备与 OTA 机型不匹配时仍使用设备数据 |
-| `--scripts-dir DIR` | 刷机脚本模板目录，默认仓库内 `scripts/` |
+| `--scripts-dir DIR` | 脚本模板根目录，需包含 `bash/` 与 `windows/`，默认仓库内 `scripts/` |
 | `--dry-run` | 只解析、校验并打印计划 |
 | `--resume` | 保留已有输出目录继续执行 |
 | `--reuse-raw` | 配合 `--resume`：分区镜像尺寸匹配时跳过解包 |
@@ -236,12 +299,16 @@ FLASH_SAFE_WITH_MODEM=1 ./flash.sh
    - `vbmeta_system`（含全部动态分区）
    - `vbmeta_oem`
    - `vbmeta_vgc`
-4. 脚本引用检查：`flash.sh` / `flash-full.sh` 中每个必需镜像都存在
+4. 脚本引用检查：目标平台对应的 `flash` / `flash-full` 脚本中每个必需镜像都存在
 5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
 
 ```bash
 ./verify.sh
+```
+
+```powershell
+.\verify.cmd
 ```
 
 清单覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
@@ -256,12 +323,17 @@ FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 SKIP_MODEL_CHECK=1 ./flash.sh
 ```
 
+```powershell
+$env:SKIP_MODEL_CHECK = "1"
+.\flash.cmd
+```
+
 ## 安全说明
 
 - 转换器 **不会刷机**，只生成包并校验。
 - 设备探测只读：不写入、不刷机、不解锁；必要时会自动重启进 bootloader 读取数据，然后重启回 Android。
-- `flash-full.sh` 会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用 `flash.sh`。
-- `flash.sh` 不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
+- 完整线刷脚本（`flash-full.sh` / `flash-full.cmd`）会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用安全线刷脚本（`flash.sh` / `flash.cmd`）。
+- 安全线刷脚本不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
 - 刷机会清空数据，先备份。
 - 必须解锁 Bootloader。
@@ -274,9 +346,9 @@ SKIP_MODEL_CHECK=1 ./flash.sh
 
 **提示磁盘不足**：峰值约为动态分区总和 × 2 + 固件大小 × 2。大包需要约 25 GiB 空闲空间。
 
-**刷完卡在开机 logo**：用 `./flash.sh` 回刷旧包；或确认是否需要同步更新 bootloader。
+**刷完卡在开机 logo**：用 `./flash.sh`（Windows 用 `.\flash.cmd`）回刷旧包；或确认是否需要同步更新 bootloader。
 
-**系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`，选择与手机一致的制式；包内没有该制式时，重新构建并加 `--all-oem`。
+**系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`（Windows 用 `.\fix-oem.cmd`），选择与手机一致的制式；包内没有该制式时，重新构建并加 `--all-oem`。
 
 **生成的 `super.img` 尺寸不对**：用 ADB 连接目标设备后让转换器自动读取；仅处于 Fastboot 模式时不会探测。也可用 `--device-size` 指定。转换器不会读取本机已安装的包来猜测尺寸。
 
@@ -298,12 +370,19 @@ SKIP_MODEL_CHECK=1 ./flash.sh
 | `ota2fastboot/firmware.py` | 物理镜像映射 |
 | `ota2fastboot/package.py` | 刷机脚本与 `package.env` |
 | `ota2fastboot/report.py` | 清单与构建报告 |
-| `scripts/common.sh` | 刷机脚本共用函数 |
-| `scripts/flash.sh` | 默认安全线刷模板 |
-| `scripts/flash-full.sh` | 完整线刷模板 |
-| `scripts/flash-safe.sh` | 旧名称兼容别名 |
-| `scripts/fix-oem.sh` | OEM 修复模板 |
-| `scripts/verify.sh` | 包完整性校验模板 |
+| `scripts/bash/common.sh` | Linux / macOS 刷机脚本共用函数 |
+| `scripts/bash/flash.sh` | 默认安全线刷模板 |
+| `scripts/bash/flash-full.sh` | 完整线刷模板 |
+| `scripts/bash/flash-safe.sh` | 旧名称兼容别名 |
+| `scripts/bash/fix-oem.sh` | OEM 修复模板 |
+| `scripts/bash/verify.sh` | 包完整性校验模板 |
+| `scripts/windows/common.ps1` | Windows 刷机脚本共用函数 |
+| `scripts/windows/flash.ps1` | 默认安全线刷模板 |
+| `scripts/windows/flash-full.ps1` | 完整线刷模板 |
+| `scripts/windows/flash-safe.ps1` | 旧名称兼容别名 |
+| `scripts/windows/fix-oem.ps1` | OEM 修复模板 |
+| `scripts/windows/verify.ps1` | 包完整性校验模板 |
+| `scripts/windows/*.cmd` | 绕过执行策略的启动器 |
 | `out/` | 生成的线刷包（git 忽略） |
 
 也可用模块方式运行：

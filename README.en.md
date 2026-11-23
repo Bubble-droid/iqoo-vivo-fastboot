@@ -2,7 +2,7 @@
 
 [中文](README.md) | **English**
 
-`ota2fastboot.py` converts an **extracted** vivo / iQOO full OTA (block mode) into a self-contained fastboot package. It rebuilds every dynamic partition, creates a sparse `super.img` with `lpmake`, extracts the selected OEM variant, copies the physical images required by the flash scripts, and verifies the result with `e2fsck`, `lpdump`, `avbtool` and SHA-256 manifests.
+`ota2fastboot.py` converts an **extracted** vivo / iQOO full OTA (block mode) into a self-contained fastboot package. The package ships platform-native flash scripts: bash for Linux / macOS, and PowerShell with `.cmd` launchers for Windows. The default entry point is the safe `./flash.sh` (Windows: `.\flash.cmd`); use `./flash-full.sh` (Windows: `.\flash-full.cmd`) for a full flash. It rebuilds every dynamic partition, creates a sparse `super.img` with `lpmake`, extracts the selected OEM variant, copies the physical images required by the flash scripts, and verifies the result with `e2fsck`, `lpdump`, `avbtool` and SHA-256 manifests.
 
 ---
 
@@ -15,9 +15,10 @@
 - Optionally probes an ADB-connected device at build time and uses its real `super` size, OEM/VGC identity and model check to make the package fit the hardware; when ADB cannot read the `super` size, the bootloader is queried automatically
 - Extracts the OEM repair image for the variant placed in `super`; `--all-oem` packages every variant
 - Extracts the VGC variant and places it in `super`
-- Copies the bootloader, modem, xbl, tz and other physical images required by `flash-full.sh`
-- Generates a package `README.md`, `package.env`, the flash scripts, `verify.sh`, a build report and a SHA-256 manifest
-- Optional target platform: `--target-platform windows` with `--platform-tools-dir` bundles the Windows `adb.exe` / `fastboot.exe` under `platform-tools/`
+- Copies the bootloader, modem, xbl, tz and other physical images required by the full flash scripts
+- Generates a package `README.md`, `package.env`, the platform flash scripts, the verify script, a build report and a SHA-256 manifest
+- The target platform selects the scripts: `linux` / `macos` get bash, `windows` gets native PowerShell plus `.cmd`
+- Optional Windows target: `--target-platform windows` with `--platform-tools-dir` bundles the Windows `adb.exe` / `fastboot.exe` under `platform-tools/`
 - Masks the device serial in the build log and reports by default; `--keep-serial` opts out
 - Verifies with `e2fsck`, `lpdump`, the AVB chain, script reference completeness and sparse image expansion size
 - Generated files never contain the absolute path of the build machine
@@ -32,6 +33,8 @@
 | `e2fsck` | Check ext4 partition images |
 | `avbtool` | Verify AVB signatures and chained partitions |
 | `adb` / `fastboot` | Probe over ADB at build time, with an automatic bootloader pass when needed; flash the package |
+| `bash` | Flash scripts in Linux / macOS packages |
+| PowerShell 5.1+ | Flash scripts in Windows packages; included with Windows 10/11 |
 
 Debian / Ubuntu:
 
@@ -85,7 +88,9 @@ Use `--serial` to choose the ADB device when more than one is connected. To vali
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
 ```
 
-After the build:
+After the build, run the scripts that match the package target.
+
+Linux / macOS package (the default, follows the build host):
 
 ```bash
 cd out/<OTA name>-fastboot
@@ -96,7 +101,22 @@ chmod +x ./*.sh
 ./flash-full.sh   # full flash, bootloader and UFS firmware included
 ```
 
+Windows package (`--target-platform windows`):
+
+```powershell
+cd out\<OTA name>-fastboot
+
+.\verify.cmd      # verify manifest.sha256
+.\flash.cmd       # default: Android partitions only
+.\flash-full.cmd  # full flash, bootloader and UFS firmware included
+```
+
+The `.cmd` launchers invoke the matching `.ps1` with
+`-ExecutionPolicy Bypass`, so no system policy change is needed.
+
 ## Output layout
+
+Linux / macOS package:
 
 ```text
 out/<OTA name>-fastboot/
@@ -114,7 +134,6 @@ out/<OTA name>-fastboot/
 │   ├── BUILD.md              # build report: partition table, variants, verification
 │   ├── build.json            # machine-readable build result (including the device probe)
 │   └── build.log             # full log; host paths and serial masked by default
-├── platform-tools/           # optional: Windows target with a tools directory
 └── firmware-update/
     ├── boot.img vendor_boot.img dtbo.img recovery.img vm-bootsys.img
     ├── vbmeta.img vbmeta_system.img vbmeta_vgc.img
@@ -125,34 +144,80 @@ out/<OTA name>-fastboot/
         └── vbmeta_oem_<selected variant>.img
 ```
 
+Windows package:
+
+```text
+out/<OTA name>-fastboot/
+├── README.md
+├── package.env
+├── flash.ps1 / flash.cmd                  # default safe flash
+├── flash-full.ps1 / flash-full.cmd        # full flash
+├── flash-safe.ps1 / flash-safe.cmd        # compatibility alias
+├── fix-oem.ps1 / fix-oem.cmd              # OEM identity repair
+├── verify.ps1 / verify.cmd                # verify manifest.sha256
+├── common.ps1                             # shared helpers
+├── manifest.sha256
+├── manifest.json
+├── meta/
+│   ├── BUILD.md
+│   ├── build.json
+│   └── build.log
+├── platform-tools/           # optional: present with --platform-tools-dir
+└── firmware-update/
+    ├── ... same images as the Linux package ...
+    └── oem/
+        ├── OEM_<selected variant>.img
+        └── vbmeta_oem_<selected variant>.img
+```
+
 `manifest.sha256` covers every file except `meta/build.log` and the manifest
 files themselves. `device-info.txt` is written into the package when flashing
 and records the pre-flash model, OEM, Android version and package version.
 
-## The three flash scripts
+## Flash scripts
 
-| Script | Writes | Risk |
+| Action | Linux / macOS | Windows |
 | --- | --- | --- |
-| `flash.sh` | `boot`, `dtbo`, `vendor_boot`, `recovery`, `vm-bootsys`, `vbmeta*`, `super`, OEM repair | Low. Fastboot remains reachable, so an older package can be flashed back |
-| `flash-full.sh` | Everything, including `xbl`, `abl`, `tz`, `hyp`, `storage`, ... | High. An interrupted bootloader write may be unrecoverable without EDL |
-| `fix-oem.sh` | `vbmeta_oem` + `oem` | Low. Repairs the identity only, does not touch the system |
+| Default safe flash | `flash.sh` | `flash.ps1` or `flash.cmd` |
+| Full flash | `flash-full.sh` | `flash-full.ps1` or `flash-full.cmd` |
+| OEM repair | `fix-oem.sh` | `fix-oem.ps1` or `fix-oem.cmd` |
+| Verify the package | `verify.sh` | `verify.ps1` or `verify.cmd` |
+| Old-name alias | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
 
-`flash-safe.sh` is the old name and remains as a compatibility alias for
-`flash.sh`.
+The safe flash writes `boot`, `dtbo`, `vendor_boot`, `recovery`, `vm-bootsys`,
+`vbmeta*`, `super` and repairs the OEM identity. Fastboot remains reachable,
+so an older package can be flashed back if it fails. The full flash also writes
+`xbl`, `abl`, `tz`, `hyp`, `storage` and the rest of the bootloader chain; an
+interrupted bootloader write may be unrecoverable without EDL.
 
-`flash.sh` skips the modem group by default. To include it:
+`flash-safe.sh` / `flash-safe.cmd` is the old name and remains as a
+compatibility alias.
+
+The modem group is skipped by default. To include it:
 
 ```bash
 FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 ```
 
-`fix-oem.sh` supports:
+```powershell
+$env:FLASH_SAFE_WITH_MODEM = "1"
+.\flash.cmd
+```
+
+OEM repair:
 
 ```bash
 ./fix-oem.sh --list
 ./fix-oem.sh --name PD2171_CN-ZH_FULL_SC_NULL
 ./fix-oem.sh --name BMW --yes
 ./fix-oem.sh --filter CT-BMW
+```
+
+```powershell
+.\fix-oem.cmd --list
+.\fix-oem.cmd --name PD2171_CN-ZH_FULL_SC_NULL
+.\fix-oem.cmd --name BMW --yes
+.\fix-oem.cmd --filter CT-BMW
 ```
 
 By default only the OEM variant used in `super` is packaged. Add `--all-oem`
@@ -169,12 +234,12 @@ at build time to keep every variant.
 | `--serial SERIAL` | ADB device serial to probe; default is the first ADB device |
 | `--keep-serial` | Keep the full device serial in the reports and log; default keeps only the last four characters |
 | `--all-oem` | Package every OEM repair variant from the OTA; default keeps only the variant placed in `super` |
-| `--target-platform PLATFORM` | Package target: `linux`, `windows` or `macos`; default follows the build host |
+| `--target-platform PLATFORM` | Package target: `linux`, `windows` or `macos`; default follows the build host. `linux` / `macos` get bash scripts, `windows` gets PowerShell plus `.cmd` |
 | `--platform-tools-dir DIR` | Windows target only: copy `adb.exe` / `fastboot.exe` from this directory into `platform-tools/`; omitted means skip |
 | `--no-device` | Do not probe a connected device |
 | `--require-device` | Fail when no compatible ADB device is connected |
 | `--skip-device-check` | Use a connected device even when it does not match the OTA |
-| `--scripts-dir DIR` | Flash script template directory, default `scripts/` in the repository |
+| `--scripts-dir DIR` | Script template root containing `bash/` and `windows/`; default `scripts/` in the repository |
 | `--dry-run` | Parse, validate and print the plan only |
 | `--resume` | Keep an existing output directory and continue |
 | `--reuse-raw` | With `--resume`: skip extraction when a partition image already has the expected size |
@@ -238,12 +303,16 @@ The converter accepts **ADB connections only**. A phone that is visible only in 
    - `vbmeta_system` (covering all dynamic partitions)
    - `vbmeta_oem`
    - `vbmeta_vgc`
-4. Script reference check: every required image referenced by `flash.sh` / `flash-full.sh` exists
+4. Script reference check: every required image referenced by the target package's `flash` / `flash-full` scripts exists
 5. The sparse image expands to exactly the requested `super` size (`--device-size`, the device probe value, or the default)
 6. The SHA-256 manifest can be verified:
 
 ```bash
 ./verify.sh
+```
+
+```powershell
+.\verify.cmd
 ```
 
 The manifest covers every file except `meta/build.log` and the manifest files
@@ -259,12 +328,17 @@ To skip the check when you are certain:
 SKIP_MODEL_CHECK=1 ./flash.sh
 ```
 
+```powershell
+$env:SKIP_MODEL_CHECK = "1"
+.\flash.cmd
+```
+
 ## Safety
 
 - The converter **never flashes anything**; it only builds and verifies the package.
 - Device probing never writes, flashes or unlocks. When needed it reboots the phone to the bootloader and then back to Android.
-- `flash-full.sh` writes the bootloader chain and UFS firmware. When EDL recovery is unavailable, prefer `flash.sh`.
-- `flash.sh` does not write `storage`, `xbl`, `xbl_config`, `abl`, `tz`, `hyp`, `aop`, `devcfg`, `keymaster`, `uefisecapp`, `uefi`, `shrm`, `cpucp`, `imagefv`, `multiimg*`, `storsec`, `featenabler`, `toolsfv` or `xbl_ramdump`.
+- The full flash scripts (`flash-full.sh` / `flash-full.cmd`) write the bootloader chain and UFS firmware. When EDL recovery is unavailable, prefer the safe scripts (`flash.sh` / `flash.cmd`).
+- The safe scripts do not write `storage`, `xbl`, `xbl_config`, `abl`, `tz`, `hyp`, `aop`, `devcfg`, `keymaster`, `uefisecapp`, `uefi`, `shrm`, `cpucp`, `imagefv`, `multiimg*`, `storsec`, `featenabler`, `toolsfv` or `xbl_ramdump`.
 - Flashing across versions may raise the anti-rollback counter; the device may refuse a bootloader downgrade.
 - Flashing wipes data; back up first.
 - The bootloader must be unlocked.
@@ -277,9 +351,9 @@ SKIP_MODEL_CHECK=1 ./flash.sh
 
 **Not enough disk space**: peak usage is roughly dynamic partition total × 2 + firmware size × 2. A large package needs about 25 GiB free.
 
-**Stuck at the boot logo after flashing**: flash the older package back with `./flash.sh`, or check whether the bootloader must be updated together.
+**Stuck at the boot logo after flashing**: flash the older package back with `./flash.sh` (on Windows, `.\flash.cmd`), or check whether the bootloader must be updated together.
 
-**"System corrupt" or wrong OEM identity**: run `./fix-oem.sh` and select the variant that matches the phone; rebuild with `--all-oem` if that variant was not packaged.
+**"System corrupt" or wrong OEM identity**: run `./fix-oem.sh` (on Windows, `.\fix-oem.cmd`) and select the variant that matches the phone; rebuild with `--all-oem` if that variant was not packaged.
 
 **Wrong `super.img` size**: connect the target device over ADB so the converter can read the real size; a Fastboot-only connection is not probed. Alternatively pass `--device-size`. The converter does not read a package already installed on the host to guess the size.
 
@@ -301,12 +375,19 @@ SKIP_MODEL_CHECK=1 ./flash.sh
 | `ota2fastboot/firmware.py` | Physical image mapping |
 | `ota2fastboot/package.py` | Flash scripts and `package.env` |
 | `ota2fastboot/report.py` | Manifest and build report |
-| `scripts/common.sh` | Shared flash script helpers |
-| `scripts/flash.sh` | Default safe flash template |
-| `scripts/flash-full.sh` | Full flash template |
-| `scripts/flash-safe.sh` | Old-name compatibility alias |
-| `scripts/fix-oem.sh` | OEM repair template |
-| `scripts/verify.sh` | Package integrity verification template |
+| `scripts/bash/common.sh` | Shared helpers for Linux / macOS flash scripts |
+| `scripts/bash/flash.sh` | Default safe flash template |
+| `scripts/bash/flash-full.sh` | Full flash template |
+| `scripts/bash/flash-safe.sh` | Old-name compatibility alias |
+| `scripts/bash/fix-oem.sh` | OEM repair template |
+| `scripts/bash/verify.sh` | Package integrity verification template |
+| `scripts/windows/common.ps1` | Shared helpers for Windows flash scripts |
+| `scripts/windows/flash.ps1` | Default safe flash template |
+| `scripts/windows/flash-full.ps1` | Full flash template |
+| `scripts/windows/flash-safe.ps1` | Old-name compatibility alias |
+| `scripts/windows/fix-oem.ps1` | OEM repair template |
+| `scripts/windows/verify.ps1` | Package integrity verification template |
+| `scripts/windows/*.cmd` | Launchers that bypass the execution policy |
 | `out/` | Generated fastboot packages (git ignored) |
 
 The converter can also be run as a module:
