@@ -2,7 +2,7 @@
 
 **中文** | [English](README.en.md)
 
-`ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本，可直接 `./flash-safe.sh` 或 `./flash.sh`。
+`ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本，可直接 `./flash.sh`（安全默认）或 `./flash-full.sh`（完整线刷）。
 
 ---
 
@@ -13,10 +13,12 @@
 - 重建 `vm-bootsys` 等 `super` 之外的块镜像（OTA 提供时）
 - 用 `lpmake` 生成与设备 `super` 分区同尺寸的稀疏 `super.img`
 - 构建时可选读取 ADB 连接的设备，用实际 `super` 大小、OEM/VGC 身份和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
-- 提取 `oem/` 下的全部 OEM 制式，供刷机后修复身份
+- 提取选中 OEM 制式的修复镜像；加 `--all-oem` 时提取全部制式
 - 提取 `vgc/` 变体并写入 `super`
-- 复制 `flash.sh` 所需的 bootloader、modem、xbl、tz 等物理镜像
-- 自动生成 `package.env`、刷机脚本、构建报告和 SHA-256 清单
+- 复制 `flash-full.sh` 所需的 bootloader、modem、xbl、tz 等物理镜像
+- 自动生成包内 `README.md`、`package.env`、刷机脚本、`verify.sh`、构建报告和 SHA-256 清单
+- 可选目标平台：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
+- 构建日志与报告默认脱敏设备序列号，只保留后四位；`--keep-serial` 可关闭
 - 校验：`e2fsck`、`lpdump`、AVB 链、脚本引用完整性、稀疏镜像展开尺寸
 - 生成文件中不包含构建机的绝对路径
 
@@ -89,47 +91,57 @@ cd <repo>
 cd out/<OTA 名称>-fastboot
 chmod +x ./*.sh
 
-./flash-safe.sh   # 只刷 Android 分区，保留 bootloader 与 fastboot 退路
-./flash.sh        # 完整线刷，包含 bootloader 与 UFS 固件
+./verify.sh       # 校验 manifest.sha256
+./flash.sh        # 默认：只刷 Android 分区，保留 bootloader 与 fastboot 退路
+./flash-full.sh   # 完整线刷，包含 bootloader 与 UFS 固件
 ```
 
 ## 输出结构
 
 ```text
 out/<OTA 名称>-fastboot/
-├── BUILD.md                  # 构建报告：分区表、变体、校验结果
-├── build.json                # 机器可读的构建参数与结果
-├── build.log                 # 完整日志，路径已脱敏
-├── device.json               # ADB 与 bootloader 的探测结果（连接 ADB 设备时）
+├── README.md                 # 包内使用说明（中文）
 ├── package.env               # 包标题、机型匹配、默认 OEM 身份
-├── flash.sh                  # 完整线刷
-├── flash-safe.sh             # 安全线刷：不写 bootloader / storage / modem
+├── flash.sh                  # 默认安全线刷：不写 bootloader / storage / modem
+├── flash-full.sh             # 完整线刷
+├── flash-safe.sh             # flash.sh 的兼容别名
 ├── fix-oem.sh                # OEM 身份修复
-├── common.sh                 # 上面三个脚本共用的函数
-├── manifest.sha256           # 产物 SHA-256 清单
+├── verify.sh                 # 按 manifest.sha256 校验包
+├── common.sh                 # 上面脚本共用的函数
+├── manifest.sha256           # 包完整性清单
 ├── manifest.json
+├── meta/
+│   ├── BUILD.md              # 构建报告：分区表、变体、校验结果
+│   ├── build.json            # 机器可读的构建参数与结果（含设备探测）
+│   └── build.log             # 完整日志；主机路径与序列号默认脱敏
+├── platform-tools/           # 可选：仅 Windows 目标且指定了目录
 └── firmware-update/
     ├── boot.img vendor_boot.img dtbo.img recovery.img vm-bootsys.img
-    ├── vbmeta.img vbmeta_system.img vbmeta_oem.img vbmeta_vgc.img
+    ├── vbmeta.img vbmeta_system.img vbmeta_vgc.img
     ├── super.img             # lpmake 生成的稀疏镜像
     ├── NON-HLOS.bin dspso.bin BTFM.bin abl.elf tz.mbn xbl_s.melf ...
     └── oem/
-        ├── OEM_<每个制式>.img
-        └── vbmeta_oem_<每个制式>.img
+        ├── OEM_<选中制式>.img
+        └── vbmeta_oem_<选中制式>.img
 ```
+
+`manifest.sha256` 覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
+`device-info.txt` 在刷机时写入包目录，记录刷机前的机型、OEM、Android 版本和包版本。
 
 ## 三个刷机脚本
 
 | 脚本 | 写入内容 | 风险 |
 | --- | --- | --- |
-| `flash-safe.sh` | `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、`vbmeta*`、`super`、OEM 修复 | 低。失败后仍可进入 Fastboot，用旧包回滚 |
-| `flash.sh` | 完整包，包括 `xbl`、`abl`、`tz`、`hyp`、`storage` 等 | 高。bootloader 写入中断可能无法用 EDL 之外的方式恢复 |
+| `flash.sh` | `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、`vbmeta*`、`super`、OEM 修复 | 低。失败后仍可进入 Fastboot，用旧包回滚 |
+| `flash-full.sh` | 完整包，包括 `xbl`、`abl`、`tz`、`hyp`、`storage` 等 | 高。bootloader 写入中断可能无法用 EDL 之外的方式恢复 |
 | `fix-oem.sh` | `vbmeta_oem` + `oem` | 低。只修复制式，不碰系统 |
 
-`flash-safe.sh` 默认不写 modem 组。需要时：
+`flash-safe.sh` 为旧名称，保留为 `flash.sh` 的兼容别名。
+
+`flash.sh` 默认不写 modem 组。需要时：
 
 ```bash
-FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
+FLASH_SAFE_WITH_MODEM=1 ./flash.sh
 ```
 
 `fix-oem.sh` 支持：
@@ -141,6 +153,9 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 ./fix-oem.sh --filter CT-BMW
 ```
 
+默认只打包 `super` 使用的 OEM 变体。需要包内保留全部制式时，构建时加
+`--all-oem`。
+
 ## 常用选项
 
 | 选项 | 说明 |
@@ -150,6 +165,10 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 | `--vgc NAME\|auto\|none` | 放进 `super` 的 VGC 变体。默认 `auto`：优先使用 ADB 设备报告的 VGC 身份，否则优先 `V000` |
 | `--device-size SIZE` | 设备 `super` 分区大小。默认取 ADB 或 bootloader 读取的实际大小，否则 `15032385536`（14 GiB，iQOO 9 / 9 Pro） |
 | `--serial SERIAL` | 指定要探测的 ADB 设备；默认使用第一个 ADB 设备 |
+| `--keep-serial` | 在报告与日志中保留完整设备序列号；默认只保留后四位 |
+| `--all-oem` | 打包 OTA 内全部 OEM 修复变体；默认只保留写入 `super` 的变体 |
+| `--target-platform PLATFORM` | 包目标平台：`linux`、`windows`、`macos`；默认跟随制作系统 |
+| `--platform-tools-dir DIR` | 仅 Windows 目标：把该目录的 `adb.exe` / `fastboot.exe` 复制到包内 `platform-tools/`；省略则跳过 |
 | `--no-device` | 不探测已连接设备 |
 | `--require-device` | 没有兼容的 ADB 设备时直接失败 |
 | `--skip-device-check` | 设备与 OTA 机型不匹配时仍使用设备数据 |
@@ -179,6 +198,14 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 
 # 只探测指定 ADB 设备，并要求它必须存在且与 OTA 匹配
 ./ota2fastboot.py /path/to/<full-ota> --serial <serial> --require-device
+
+# Windows 目标，并附带 platform-tools
+./ota2fastboot.py /path/to/<full-ota> \
+    --target-platform windows \
+    --platform-tools-dir /path/to/platform-tools
+
+# 包内保留全部 OEM 修复变体
+./ota2fastboot.py /path/to/<full-ota> --all-oem
 ```
 
 ## 读取 ADB 设备
@@ -196,7 +223,8 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
 - 设备报告的 OEM 身份存在于 OTA 中时，`--oem auto` 直接选它；VGC 同理。
 - 设备机型与 OTA 的 `pre-device` / `hardware-device` 不匹配时，默认忽略设备数据，继续按 OTA 元数据构建；`--skip-device-check` 强制使用设备数据，`--require-device` 要求必须有兼容的 ADB 设备。
 - 设备报告的 model / product 会追加到 `package.env` 的 `MODEL_REGEX`，让刷机时的机型检查接受真实设备。
-- 探测结果写入 `device.json`（含 `bootloader` 字段），并出现在 `BUILD.md` 与 `build.json` 中。
+- 探测结果写入 `meta/build.json` 的 `target_device` 字段，并出现在 `meta/BUILD.md` 中；序列号默认脱敏为后四位。
+- 构建日志中的设备序列号同样默认脱敏；需要完整记录时加 `--keep-serial`。
 - ADB 重启至 bootloader 再返回 Android 需要一定时间；期间请保持 USB 连接。
 
 ## 校验内容
@@ -208,13 +236,15 @@ FLASH_SAFE_WITH_MODEM=1 ./flash-safe.sh
    - `vbmeta_system`（含全部动态分区）
    - `vbmeta_oem`
    - `vbmeta_vgc`
-4. 脚本引用检查：`flash.sh` / `flash-safe.sh` 中每个必需镜像都存在
+4. 脚本引用检查：`flash.sh` / `flash-full.sh` 中每个必需镜像都存在
 5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
 
 ```bash
-sha256sum -c manifest.sha256
+./verify.sh
 ```
+
+清单覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
 
 ## 机型检查
 
@@ -223,15 +253,15 @@ sha256sum -c manifest.sha256
 确需跳过：
 
 ```bash
-SKIP_MODEL_CHECK=1 ./flash-safe.sh
+SKIP_MODEL_CHECK=1 ./flash.sh
 ```
 
 ## 安全说明
 
 - 转换器 **不会刷机**，只生成包并校验。
 - 设备探测只读：不写入、不刷机、不解锁；必要时会自动重启进 bootloader 读取数据，然后重启回 Android。
-- `flash.sh` 会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用 `flash-safe.sh`。
-- `flash-safe.sh` 不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
+- `flash-full.sh` 会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用 `flash.sh`。
+- `flash.sh` 不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
 - 刷机会清空数据，先备份。
 - 必须解锁 Bootloader。
@@ -244,9 +274,9 @@ SKIP_MODEL_CHECK=1 ./flash-safe.sh
 
 **提示磁盘不足**：峰值约为动态分区总和 × 2 + 固件大小 × 2。大包需要约 25 GiB 空闲空间。
 
-**刷完卡在开机 logo**：用 `./flash-safe.sh` 回刷旧包；或确认是否需要同步更新 bootloader。
+**刷完卡在开机 logo**：用 `./flash.sh` 回刷旧包；或确认是否需要同步更新 bootloader。
 
-**系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`，选择与手机一致的制式。
+**系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`，选择与手机一致的制式；包内没有该制式时，重新构建并加 `--all-oem`。
 
 **生成的 `super.img` 尺寸不对**：用 ADB 连接目标设备后让转换器自动读取；仅处于 Fastboot 模式时不会探测。也可用 `--device-size` 指定。转换器不会读取本机已安装的包来猜测尺寸。
 
@@ -269,9 +299,11 @@ SKIP_MODEL_CHECK=1 ./flash-safe.sh
 | `ota2fastboot/package.py` | 刷机脚本与 `package.env` |
 | `ota2fastboot/report.py` | 清单与构建报告 |
 | `scripts/common.sh` | 刷机脚本共用函数 |
-| `scripts/flash.sh` | 完整线刷模板 |
-| `scripts/flash-safe.sh` | 安全线刷模板 |
+| `scripts/flash.sh` | 默认安全线刷模板 |
+| `scripts/flash-full.sh` | 完整线刷模板 |
+| `scripts/flash-safe.sh` | 旧名称兼容别名 |
 | `scripts/fix-oem.sh` | OEM 修复模板 |
+| `scripts/verify.sh` | 包完整性校验模板 |
 | `out/` | 生成的线刷包（git 忽略） |
 
 也可用模块方式运行：
