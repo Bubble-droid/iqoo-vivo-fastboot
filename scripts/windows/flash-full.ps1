@@ -4,6 +4,7 @@
 # chain (xbl, abl, tz, hyp, ...) and the UFS firmware (storage).  An interrupted
 # bootloader write can leave the phone unbootable without EDL recovery.  Use
 # .\flash.ps1 when you want an AP-only flash that keeps fastboot reachable.
+# After every write, the script asks whether to erase user data before rebooting.
 
 $ErrorActionPreference = 'Stop'
 $script:ScriptDir = $PSScriptRoot
@@ -64,5 +65,6 @@ Write-Host ''
 
 Flash-Items -Items $items
 Repair-Oem
+Ask-UserDataWipe
 Final-Reboot
 Pause-ForUser

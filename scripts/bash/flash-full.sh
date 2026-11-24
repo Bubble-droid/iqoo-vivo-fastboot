@@ -5,6 +5,7 @@
 # chain (xbl, abl, tz, hyp, ...) and the UFS firmware (storage).  An interrupted
 # bootloader write can leave the phone unbootable without EDL recovery.  Use
 # ./flash.sh when you want an AP-only flash that keeps fastboot reachable.
+# After every write, the script asks whether to erase user data before rebooting.
 
 set -euo pipefail
 
@@ -70,5 +71,6 @@ echo
 
 flash_items "${FLASH_ITEMS[@]}"
 repair_oem
+ask_wipe_user_data
 final_reboot
 pause

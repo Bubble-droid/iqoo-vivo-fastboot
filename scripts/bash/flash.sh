@@ -11,6 +11,7 @@
 # can normally be recovered by flashing the previous package.
 # Use ./flash-full.sh for a complete flash that includes the bootloader chain
 # and the UFS firmware.
+# After every write, the script asks whether to erase user data before rebooting.
 # Set FLASH_SAFE_WITH_MODEM=1 to include the modem group as well.
 
 set -euo pipefail
@@ -87,5 +88,6 @@ echo
 
 flash_items "${SAFE_ITEMS[@]}"
 repair_oem
+ask_wipe_user_data
 final_reboot
 pause

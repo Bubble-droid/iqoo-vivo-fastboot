@@ -454,6 +454,67 @@ function Repair-Oem {
     }
 }
 
+# Wipe only the data partitions.  The boot chain, super, modem and OEM images
+# written above stay in place, so the installed system remains complete.
+#
+# Recent platform-tools treat `fastboot -w` as erase + format of userdata,
+# cache and metadata.  Older releases only erase part of that set, so the
+# remaining data partitions are erased explicitly.  If `-w` is unsupported,
+# fall back to traditional `fastboot erase` calls.
+function Clear-UserData {
+    Write-Host ''
+    Write-Host ' -- Wiping data partitions (system partitions are kept).'
+    $ok = $false
+    $extraParts = @('metadata', 'frp')
+
+    Invoke-Fastboot -Arguments @('-w')
+    if ($LASTEXITCODE -eq 0) {
+        $ok = $true
+    }
+    else {
+        Write-Host ' -- fastboot -w unavailable; using fastboot erase instead.'
+        $extraParts = @('metadata', 'cache', 'frp')
+        $result = Get-FastbootResult -Arguments @('erase', 'userdata')
+        if ($result.Code -eq 0) { $ok = $true }
+    }
+
+    # `-w` does not cover all of these on every platform-tools release.
+    # `cache` is only erased in the fallback, so a modern `-w` keeps the
+    # filesystem it just formatted.  `misc` is left alone because it can
+    # carry the A/B slot suffix.
+    foreach ($part in $extraParts) {
+        $result = Get-FastbootResult -Arguments @('erase', $part)
+        if ($result.Code -ne 0) {
+            Write-Host " -- note: could not erase $part (absent on this device?)"
+        }
+    }
+
+    if (-not $ok) {
+        [Console]::Error.WriteLine(' -- Warning: user data was not erased. The new system may stop at')
+        [Console]::Error.WriteLine(' -- the encryption screen; wipe data manually or flash again.')
+        return $false
+    }
+    return $true
+}
+
+# Ask before rebooting whether to start the new system with clean user data.
+function Ask-UserDataWipe {
+    Write-Host ''
+    Write-Host ' -- All flashing tasks are complete.'
+    Write-Host ' -- Wiping now gives the new system a clean first boot:'
+    Write-Host ' --   userdata: apps, photos, accounts, downloads, internal storage'
+    Write-Host ' --   metadata: encryption and update state'
+    Write-Host ' --   cache, frp'
+    Write-Host ' -- The system, boot, vendor, super, modem and OEM partitions stay intact.'
+    Write-Host ' -- This cannot be undone.'
+    Write-Host ''
+    if (-not (Confirm-Action -Prompt 'Erase all user data before rebooting?' -Default 'n')) {
+        Write-Host ' -- Keeping existing data.'
+        return
+    }
+    Clear-UserData | Out-Null
+}
+
 function Final-Reboot {
     Write-Host ''
     Write-Host ' -- Flashing finished. Rebooting...'

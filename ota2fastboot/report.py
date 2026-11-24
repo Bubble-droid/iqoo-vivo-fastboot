@@ -176,8 +176,11 @@ def render_package_readme(
             "`--keep-avb`。\n\n"
             "`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，"
             "刷机后再执行 `verify.sh` 会提示这些文件校验失败；这是正常行为。\n\n"
-            "移除强制加密后，首次启动可能需要清空 `userdata`。脚本不会自动清空"
-            "数据；需要时手动执行 `fastboot -w`（会丢失全部数据）。"
+            "移除强制加密后，首次启动可能需要清空 `userdata`。刷机脚本在全部写入"
+            "完成、重启之前会询问是否清空数据（默认保留）：确认后优先用 "
+            "`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 "
+            "`frp`；旧版 platform-tools 回退为 `fastboot erase`。只清理"
+            "数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。"
         )
     else:
         avb_note = (
@@ -208,7 +211,7 @@ def render_package_readme(
 
 - 手机已解锁 Bootloader。
 - 电量高于 35%，USB 数据线保持连接。
-- 刷机会清空数据，先备份。
+- 刷机完成后可选择清空数据；清空会丢失全部应用与文件，请先备份。
 {requirements}
 
 ## 校验
@@ -400,8 +403,12 @@ def render_build_md(
                 )
             lines.append("")
         lines += [
-            "Removing force-encryption may require formatting `userdata`; the",
-            "flash scripts never do that automatically.",
+            "Removing force-encryption may require clearing `userdata`. After",
+            "the writes the flash scripts ask whether to erase data (default:",
+            "keep); a confirmed wipe uses `fastboot -w` for `userdata`, `cache`",
+            "and `metadata`, then erases `frp`, falling back to",
+            "`fastboot erase` on older platform-tools. Only data partitions are",
+            "touched, so the system partitions stay as written.",
             "",
         ]
     else:

@@ -10,6 +10,7 @@
 # can normally be recovered by flashing the previous package.
 # Use .\flash-full.ps1 for a complete flash that includes the bootloader chain
 # and the UFS firmware.
+# After every write, the script asks whether to erase user data before rebooting.
 # Set $env:FLASH_SAFE_WITH_MODEM = "1" to include the modem group as well.
 
 $ErrorActionPreference = 'Stop'
@@ -77,5 +78,6 @@ Write-Host ''
 
 Flash-Items -Items $items
 Repair-Oem
+Ask-UserDataWipe
 Final-Reboot
 Pause-ForUser

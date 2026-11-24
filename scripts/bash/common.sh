@@ -363,6 +363,67 @@ repair_oem() {
     fi
 }
 
+# Wipe only the data partitions.  The boot chain, super, modem and OEM images
+# written above stay in place, so the installed system remains complete.
+#
+# Recent platform-tools treat `fastboot -w` as erase + format of userdata,
+# cache and metadata.  Older releases only erase part of that set, so the
+# remaining data partitions are erased explicitly.  If `-w` is unsupported,
+# fall back to traditional `fastboot erase` calls.
+wipe_user_data() {
+    local ok=0 part
+    local extras=(metadata frp)
+    echo
+    echo " -- Wiping data partitions (system partitions are kept)."
+
+    if fb -w; then
+        ok=1
+    else
+        echo " -- fastboot -w unavailable; using fastboot erase instead." >&2
+        extras=(metadata cache frp)
+        if fb erase userdata; then
+            ok=1
+        else
+            echo " -- note: could not erase userdata" >&2
+        fi
+    fi
+
+    # `-w` does not cover all of these on every platform-tools release.
+    # `cache` is only erased in the fallback, so a modern `-w` keeps the
+    # filesystem it just formatted.  `misc` is left alone because it can
+    # carry the A/B slot suffix.
+    for part in "${extras[@]}"; do
+        if ! fb erase "$part" 2>/dev/null; then
+            echo " -- note: could not erase $part (absent on this device?)"
+        fi
+    done
+
+    if [ "$ok" -eq 0 ]; then
+        echo " -- Warning: user data was not erased. The new system may stop at" >&2
+        echo " -- the encryption screen; wipe data manually or flash again." >&2
+        return 1
+    fi
+    return 0
+}
+
+# Ask before rebooting whether to start the new system with clean user data.
+ask_wipe_user_data() {
+    echo
+    echo " -- All flashing tasks are complete."
+    echo " -- Wiping now gives the new system a clean first boot:"
+    echo " --   userdata: apps, photos, accounts, downloads, internal storage"
+    echo " --   metadata: encryption and update state"
+    echo " --   cache, frp"
+    echo " -- The system, boot, vendor, super, modem and OEM partitions stay intact."
+    echo " -- This cannot be undone."
+    echo
+    if ! confirm "Erase all user data before rebooting?" n; then
+        echo " -- Keeping existing data."
+        return 0
+    fi
+    wipe_user_data || true
+}
+
 final_reboot() {
     echo
     echo " -- Flashing finished. Rebooting..."

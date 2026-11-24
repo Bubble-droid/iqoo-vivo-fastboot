@@ -126,6 +126,9 @@ cd out\<OTA 名称>-fastboot
 
 `.cmd` 启动器会以 `-ExecutionPolicy Bypass` 调用同名 `.ps1`，无需修改系统执行策略。
 
+全部分区写完、自动重启之前，脚本会询问是否清空数据（默认保留）。确认后只清理
+`userdata`、`metadata`、`cache`、`frp`，已写入的系统分区不受影响。
+
 ## 输出结构
 
 Linux / macOS 包：
@@ -256,8 +259,11 @@ OEM 修复：
 执行 `verify.sh` 会提示这些文件校验失败；这是 `fastboot` 的正常行为，不是
 文件损坏。
 
-移除强制加密后，已加密的 `userdata` 可能需要清空才能启动；脚本不会自动清空
-数据。需要时手动执行 `fastboot -w`（会丢失全部数据）。
+移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部
+写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用
+`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦
+`frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。
+只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
 ## 常用选项
 
@@ -385,7 +391,7 @@ $env:SKIP_MODEL_CHECK = "1"
 - 安全线刷脚本不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
 - 默认生成的包会移除 AVB / dm-verity / 强制加密，并在刷 `vbmeta*` 时禁用校验；系统完整性校验因此失效。只在你自己的设备上使用。
-- 刷机会清空数据，先备份。
+- 刷机完成后可选择清空数据；清空会丢失全部应用与文件，请先备份。
 - 必须解锁 Bootloader。
 
 ## 常见问题

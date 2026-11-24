@@ -132,6 +132,11 @@ cd out\<OTA name>-fastboot
 The `.cmd` launchers invoke the matching `.ps1` with
 `-ExecutionPolicy Bypass`, so no system policy change is needed.
 
+After every partition is written and before the automatic reboot, the scripts
+ask whether to erase data (default: keep). Only `userdata`, `metadata`,
+`cache` and `frp` are cleared; the system partitions just written are left
+intact.
+
 ## Output layout
 
 Linux / macOS package:
@@ -271,8 +276,13 @@ With these flags `fastboot` rewrites the `vbmeta*` image in place, so running
 fastboot behaviour, not corruption.
 
 Removing force-encryption can make an already encrypted `userdata` partition
-unbootable until it is formatted. The scripts never format it automatically;
-run `fastboot -w` yourself when needed (this erases all data).
+unbootable until it is cleared. After all writes and before the automatic
+reboot, the flash scripts ask whether to erase data (default: keep). When
+confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and
+`metadata`, then erase `frp`; older platform-tools fall back to traditional
+`fastboot erase userdata` calls. Only data partitions are touched, so the
+freshly written system, boot, vendor, super, modem and OEM partitions stay
+intact.
 
 ## Common options
 
@@ -404,7 +414,7 @@ $env:SKIP_MODEL_CHECK = "1"
 - The safe scripts do not write `storage`, `xbl`, `xbl_config`, `abl`, `tz`, `hyp`, `aop`, `devcfg`, `keymaster`, `uefisecapp`, `uefi`, `shrm`, `cpucp`, `imagefv`, `multiimg*`, `storsec`, `featenabler`, `toolsfv` or `xbl_ramdump`.
 - Flashing across versions may raise the anti-rollback counter; the device may refuse a bootloader downgrade.
 - Generated packages remove AVB / dm-verity / force-encryption and disable vbmeta verification by default; system integrity checks no longer apply. Use them only on your own device.
-- Flashing wipes data; back up first.
+- Flashing can optionally wipe data after the writes; wiping removes all apps and files, so back up first.
 - The bootloader must be unlocked.
 
 ## Troubleshooting
