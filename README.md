@@ -301,13 +301,13 @@ OEM 修复：
 
 - 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及 `vendor.img` 的 `/etc/fstab.qcom`；`vendor.img` 为 ext4 或 EROFS 时自动识别，Android 12 与 Android 15 的两种格式都支持；
 - 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、`keepverity`、`keepforceencrypt` 等标记；
-- 写入 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 时附加 `--disable-verity --disable-verification`。
+- 在 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 的 AVB 头里写入“禁止校验”标记；写入的位与 `fastboot --disable-verity --disable-verification` 相同，但由构建端完成，刷机脚本按普通镜像直接写入。
 
 补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio，也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成。带 boot v4 签名的 ramdisk 只要新帧仍在原页数内就允许增长；跨页才报错。
 
-若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的 `AVB_STRIPPED` 会记录最终状态，刷机脚本据此决定是否附加禁用参数。
+若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的 `AVB_STRIPPED` 仅用于记录最终状态，镜像内容本身才是依据。
 
-`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，所以刷机后再次执行 `verify.sh` 会提示这些文件校验失败；这是 `fastboot` 的正常行为，不是文件损坏。
+构建端改写 `vbmeta*` 标记，是为了绕开部分 platform-tools 的缺陷：当 `vbmeta.img` 小于所在分区时，`fastboot --disable-verity` 可能报 `Failed to find AVB_MAGIC at offset: 0`，并拒绝写入。预置标记后，`fastboot flash vbmeta ...` 不传这两个参数即可，刷机后执行 `verify.sh` 也不会再出现被改写文件。
 
 移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用 `fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 `frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 

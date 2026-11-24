@@ -2,17 +2,24 @@
 
 The generated package is meant to run with the bootloader verification
 disabled.  The build therefore removes the fstab flags that ask Android to
-verify partitions or to force encryption, and the flash scripts pass
-``--disable-verity --disable-verification`` when they write a ``vbmeta*``
-partition.
+verify partitions or to force encryption, and sets the disable-verity /
+disable-verification bits in every ``vbmeta*`` header.  The flash scripts
+write the already patched ``vbmeta*`` images without any fastboot options.
 
-Three images are patched in place:
+Three image groups are patched in place:
 
 * ``boot.img`` / ``vendor_boot.img``: the newc cpio inside the LZ4 legacy
   ramdisk frame;
 * ``vendor.img``: the file system, rewriting the compressed EROFS inode or
   the ext4 data blocks of ``/etc/fstab.qcom``.  Both formats are detected at
-  build time, so Android 12 (ext4) and Android 15 (EROFS) work unchanged.
+  build time, so Android 12 (ext4) and Android 15 (EROFS) work unchanged;
+* ``vbmeta*.img``: the AVB header flags, the same two bits that
+  ``fastboot --disable-verity --disable-verification`` would set.
+
+Patching the vbmeta flags at build time avoids a platform-tools failure:
+some fastboot builds read the whole image while relocating a missing AVB
+footer and then fail to rewrite a vbmeta image that is smaller than its
+partition (``Failed to find AVB_MAGIC at offset: 0``).
 
 The patch keeps every file size unchanged.  Removed flags are replaced by
 spaces on the same line, so the cpio member size and the EROFS inode size
@@ -1155,6 +1162,49 @@ def _vendor_filesystem(path: Path) -> str | None:
         if magic == _EROFS_MAGIC:
             return "erofs"
     return None
+
+
+AVB_MAGIC = b"AVB0"
+AVB_FLAGS_OFFSET = 120
+AVB_DISABLE_VERITY = 0x1
+AVB_DISABLE_VERIFICATION = 0x2
+
+_REMOVE_FLAGS = AVB_DISABLE_VERITY | AVB_DISABLE_VERIFICATION
+
+
+def patch_vbmeta_image(path: Path, log: Log) -> dict:
+    """Set the disable-verity / disable-verification bits in a vbmeta image."""
+
+    data = bytearray(path.read_bytes())
+    if len(data) < AVB_FLAGS_OFFSET + 4:
+        raise ToolError(f"{path.name}: too small to be an AVB image")
+    if bytes(data[:4]) != AVB_MAGIC:
+        raise ToolError(
+            f"{path.name}: not a raw AVB vbmeta image "
+            f"(magic {bytes(data[:4])!r}); rebuild with --keep-avb if unexpected"
+        )
+
+    before = int.from_bytes(data[AVB_FLAGS_OFFSET : AVB_FLAGS_OFFSET + 4], "big")
+    after = before | _REMOVE_FLAGS
+    # AVB stores the flags as a big-endian uint32; bits 0 and 1 live in the
+    # last byte, which is also the only byte that can change for these flags.
+    data[AVB_FLAGS_OFFSET + 3] |= _REMOVE_FLAGS
+    if after != before:
+        path.write_bytes(data)
+    log(f"  {path.name}: vbmeta flags 0x{before:x} -> 0x{after:x}")
+    return {"flags_before": before, "flags_after": after}
+
+
+def patch_vbmeta_flags(out_fw: Path, log: Log) -> dict[str, dict]:
+    """Patch every vbmeta image in the package, including OEM variants."""
+
+    report: dict[str, dict] = {}
+    for path in sorted(out_fw.rglob("vbmeta*.img")):
+        key = path.relative_to(out_fw).as_posix()
+        report[key] = patch_vbmeta_image(path, log)
+    if not report:
+        raise ToolError("no vbmeta image found to patch")
+    return report
 
 
 def patch_images(

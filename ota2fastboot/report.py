@@ -171,11 +171,10 @@ def render_package_readme(
             "- 移除的标记包括 `avb=...`、`avb_keys=...`、`verify`、`vverify`、"
             "`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、"
             "`keepverity`、`keepforceencrypt` 等\n\n"
-            "刷机脚本写入 `vbmeta*` 时会附加 `--disable-verity "
-            "--disable-verification`。若需要保留原厂校验，重新构建时加 "
+            "`vbmeta*` 的“禁止校验”标记已在构建时写入镜像，刷机脚本按普通镜像"
+            "直接写入，不再给 fastboot 附加 `--disable-verity` / "
+            "`--disable-verification`。若需要保留原厂校验，重新构建时加 "
             "`--keep-avb`。\n\n"
-            "`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，"
-            "刷机后再执行 `verify.sh` 会提示这些文件校验失败；这是正常行为。\n\n"
             "移除强制加密后，首次启动可能需要清空 `userdata`。刷机脚本在全部写入"
             "完成、重启之前会询问是否清空数据（默认保留）：确认后优先用 "
             "`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 "
@@ -186,8 +185,8 @@ def render_package_readme(
         avb_note = (
             "## AVB 与强制加密\n\n"
             "本包保留了 OTA 原始的 AVB / dm-verity / 强制加密设置"
-            "（构建时使用 `--keep-avb`）。刷机脚本不会附加 "
-            "`--disable-verity` / `--disable-verification`。"
+            "（构建时使用 `--keep-avb`）。`vbmeta*` 镜像按 OTA 原样写入，"
+            "刷机脚本不附加任何禁用参数。"
         )
 
     return f"""# {device} Fastboot 刷机包
@@ -382,8 +381,9 @@ def render_build_md(
             "fstab files inside `boot.img`, `vendor_boot.img` and `vendor.img`.",
             "The vendor file system is detected automatically (ext4 or EROFS).",
             "Removed text is padded with spaces, so every file keeps its original",
-            "size. The flash scripts add `--disable-verity --disable-verification`",
-            "when they write a `vbmeta*` partition.",
+            "size. Every `vbmeta*` image already carries the disable-verity and",
+            "disable-verification flags, so the flash scripts write them without",
+            "extra fastboot options.",
             "",
         ]
         patch = avb_patch or {}
@@ -402,6 +402,19 @@ def render_build_md(
                     f"| `{name}.img` | {entries} | {len(entry.get('flags', []))} |"
                 )
             lines.append("")
+            vbmeta = patch.get("vbmeta") or {}
+            if vbmeta:
+                lines += [
+                    "| vbmeta image | flags before | flags after |",
+                    "|--------------|--------------|-------------|",
+                ]
+                for name in sorted(vbmeta):
+                    entry = vbmeta[name]
+                    lines.append(
+                        f"| `{name}` | 0x{entry['flags_before']:x} | "
+                        f"0x{entry['flags_after']:x} |"
+                    )
+                lines.append("")
         lines += [
             "Removing force-encryption may require clearing `userdata`. After",
             "the writes the flash scripts ask whether to erase data (default:",
@@ -414,8 +427,8 @@ def render_build_md(
     else:
         lines += [
             "AVB removal was disabled with `--keep-avb`. The OTA AVB metadata,",
-            "dm-verity and force-encryption flags are kept, and the flash scripts",
-            "do not pass the vbmeta disable flags.",
+            "dm-verity and force-encryption flags are kept, and the `vbmeta*`",
+            "images are flashed unchanged.",
             "",
         ]
 

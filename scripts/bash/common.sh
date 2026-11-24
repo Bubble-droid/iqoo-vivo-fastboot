@@ -272,16 +272,7 @@ flash_part() {
         exit 1
     fi
     echo " -- $part <- $img"
-    local args=(flash "$part" "$img")
-    if [ "${AVB_STRIPPED:-0}" = "1" ]; then
-        case "$part" in
-        vbmeta*)
-            args=(--disable-verity --disable-verification flash "$part" "$img")
-            echo "    (AVB verification disabled for this vbmeta image)"
-            ;;
-        esac
-    fi
-    if ! fb "${args[@]}"; then
+    if ! fb flash "$part" "$img"; then
         echo "-- Flash $part failed." >&2
         pause "Press Enter to exit..."
         exit 1

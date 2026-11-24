@@ -369,12 +369,7 @@ function Flash-Part {
         exit 1
     }
     Write-Host " -- $Partition <- $Image"
-    $arguments = @('flash', $Partition, $Image)
-    if ($script:AvbStripped -and $Partition -like 'vbmeta*') {
-        $arguments = @('--disable-verity', '--disable-verification') + $arguments
-        Write-Host '    (AVB verification disabled for this vbmeta image)'
-    }
-    Invoke-Fastboot -Arguments $arguments
+    Invoke-Fastboot -Arguments @('flash', $Partition, $Image)
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("-- Flash $Partition failed.")
         Pause-ForUser 'Press Enter to exit...'

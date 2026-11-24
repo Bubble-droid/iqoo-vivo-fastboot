@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .avb import patch_images
+from .avb import patch_images, patch_vbmeta_flags
 from .constants import BLOCK, DEFAULT_DEVICE_SIZE, SUPER_GROUP
 from .device import (
     DeviceInfo,
@@ -766,6 +766,7 @@ def _run(
         avb_patch = patch_images(
             out_fw, raw_parts, log, include_vendor=not args.no_super
         )
+        avb_patch["vbmeta"] = patch_vbmeta_flags(out_fw, log)
         patched_ext4 = {
             name: raw_parts[name]
             for name, report in avb_patch.items()

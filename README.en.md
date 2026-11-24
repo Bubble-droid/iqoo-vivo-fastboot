@@ -301,13 +301,13 @@ Generated packages disable verification and force-encryption by default:
 
 - The `fstab.qcom` inside the `boot.img` and `vendor_boot.img` ramdisks and `/etc/fstab.qcom` inside `vendor.img` are rewritten. The vendor image may be ext4 or EROFS; both Android 12 and Android 15 layouts are detected automatically.
 - Flags such as `avb=...`, `avb_keys=...`, `avb`, `verify`, `vverify`, `fileencryption=...`, `keydirectory=...`, `metadata_encryption=...`, `keepverity` and `keepforceencrypt` are removed.
-- `vbmeta`, `vbmeta_system`, `vbmeta_oem` and `vbmeta_vgc` are flashed with `--disable-verity --disable-verification`.
+- The disable-verification bits are written into the AVB header of `vbmeta`, `vbmeta_system`, `vbmeta_oem` and `vbmeta_vgc` at build time. These are the same bits that `fastboot --disable-verity --disable-verification` would set, but the flash scripts now write the images as ordinary files.
 
 The patch keeps every file size unchanged by padding the removed flags with spaces, so no cpio archive has to be rebuilt and no ext4 inode or EROFS metadata changes. The AVB chain is verified on the original OTA images before the patch runs. A signed boot v4 ramdisk may grow as long as it stays within its original page count.
 
-Pass `--keep-avb` at build time to keep the stock verification and encryption settings. The generated `package.env` records the final state in `AVB_STRIPPED`; the flash scripts use it to decide whether to add the disable flags.
+Pass `--keep-avb` at build time to keep the stock verification and encryption settings. The generated `package.env` records the final state in `AVB_STRIPPED` for reference; the image content is what matters.
 
-With these flags `fastboot` rewrites the `vbmeta*` image in place, so running `verify.sh` again after flashing reports those files as changed. That is normal fastboot behaviour, not corruption.
+The vbmeta flags are set at build time to avoid a platform-tools defect: when `vbmeta.img` is smaller than its partition, `fastboot --disable-verity` can fail with `Failed to find AVB_MAGIC at offset: 0` and refuse to write. With the flags already present, `fastboot flash vbmeta ...` needs no extra options, and `verify.sh` stays clean after flashing.
 
 Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and `metadata`, then erase `frp`; older platform-tools fall back to traditional `fastboot erase userdata` calls. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
 
