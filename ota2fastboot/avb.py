@@ -440,14 +440,17 @@ def patch_ramdisk_image(path: Path, log: Log) -> dict | None:
         if header_version >= 4 and len(image) >= 1584:
             signature_size = struct.unpack_from("<I", image, 1580)[0]
     if signature_size:
-        # The boot signature follows the ramdisk, so it must stay in place.
-        if len(new_frame) > size:
+        # The boot signature starts at the page boundary after the ramdisk.
+        # A frame that still fits in the same page count keeps the signature
+        # where it is; only crossing that boundary would move it.
+        new_pages = _round_up(len(new_frame), page) // page
+        if new_pages > old_pages:
             raise ToolError(
                 f"{path.name}: patched ramdisk needs {len(new_frame)} bytes "
-                f"but the signed ramdisk area is only {size}"
+                f"but the signed ramdisk area is only {capacity}"
             )
-        header_size = size
-        zero_to = size
+        header_size = len(new_frame) if new_pages == old_pages else capacity
+        zero_to = capacity
     else:
         # Keep the following sections (vendor_boot dtb/table) at their
         # original offsets if the ramdisk shrinks by more than one page.
