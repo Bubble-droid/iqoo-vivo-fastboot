@@ -167,7 +167,7 @@ def render_package_readme(
             "## AVB 与强制加密\n\n"
             "本包在构建时移除了 fstab 中的 AVB / dm-verity / 强制加密标记：\n\n"
             "- `boot.img` 与 `vendor_boot.img` 的 `fstab.qcom`\n"
-            "- `vendor.img` 的 `/etc/fstab.qcom`\n"
+            "- `vendor.img` 的 `/etc/fstab.qcom`；ext4 与 EROFS 均自动识别\n"
             "- 移除的标记包括 `avb=...`、`avb_keys=...`、`verify`、`vverify`、"
             "`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、"
             "`keepverity`、`keepforceencrypt` 等\n\n"
@@ -258,6 +258,7 @@ Android 版本和包版本。它不参与 SHA-256 清单。
 ## 其他文件
 
 - `firmware-update/`：所有分区镜像。
+- `firmware-update/flash-items-*.txt`：刷机脚本读取的镜像清单。
 - `firmware-update/oem/`：OEM 修复镜像与对应 `vbmeta_oem_*.img`。
 - `meta/BUILD.md`：构建报告。
 - `meta/build.json`：机器可读的构建结果。
@@ -302,8 +303,9 @@ def render_build_md(
     ]
     if device is None:
         lines += [
-            "No device was probed at build time; the package follows the OTA",
-            "metadata only.",
+            "No device was probed at build time (the default); the package",
+            "follows the OTA metadata and the explicit command-line options.",
+            "Add `--probe-device` to use the connected phone instead.",
             "",
         ]
     else:
@@ -375,6 +377,7 @@ def render_build_md(
         lines += [
             "The build removed AVB, dm-verity and force-encryption flags from the",
             "fstab files inside `boot.img`, `vendor_boot.img` and `vendor.img`.",
+            "The vendor file system is detected automatically (ext4 or EROFS).",
             "Removed text is padded with spaces, so every file keeps its original",
             "size. The flash scripts add `--disable-verity --disable-verification`",
             "when they write a `vbmeta*` partition.",

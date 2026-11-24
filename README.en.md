@@ -16,7 +16,10 @@
 - Supports split `*.new.dat`, `*.new.dat.1..N` and single-file Brotli `*.new.dat.br` streams
 - Rebuilds block images outside `super`, such as `vm-bootsys` (when the OTA provides them)
 - Builds a sparse `super.img` with `lpmake` sized to the device `super` partition
-- Optionally probes an ADB-connected device at build time and uses its real `super` size, OEM/VGC identity and model check to make the package fit the hardware; when ADB cannot read the `super` size, the bootloader is queried automatically
+- Does not touch a connected phone by default; `--probe-device` uses its real `super` size, OEM/VGC identity, devcfg type and model check to make the package fit the hardware; when ADB cannot read the `super` size, the bootloader is queried automatically
+- Adapts to both Android 12 and Android 15 firmware forms: boot v3/v4, vendor_boot v3/v4, LZ4 ramdisks, ext4 or EROFS vendor, different physical partition sets and OEM/VGC variant counts
+- Adds physical partitions that only exist in newer OTAs (such as A15 `qweslicstore` and `rtice`) from `updater-script`, and generates the flash-item lists the scripts consume
+- Packages and flashes only the `devcfg` image matching `ro.vivo.boot.devcfg_type` (`--devcfg-type` overrides)
 - Extracts the OEM repair image for the variant placed in `super`; `--all-oem` packages every variant
 - Extracts the VGC variant and places it in `super`
 - Copies the bootloader, modem, xbl, tz and other physical images required by the full flash scripts
@@ -38,7 +41,7 @@
 | `e2fsck` | Check ext4 partition images |
 | `avbtool` | Verify AVB signatures and chained partitions |
 | `liblz4` | Recompress the ramdisk and EROFS fstab when AVB is removed (default) |
-| `adb` / `fastboot` | Probe over ADB at build time, with an automatic bootloader pass when needed; flash the package |
+| `adb` / `fastboot` | Only used for `--probe-device` / `--require-device`; also used to flash the package |
 | `bash` | Flash scripts in Linux / macOS packages |
 | PowerShell 5.1+ | Flash scripts in Windows packages; included with Windows 10/11 |
 
@@ -82,13 +85,22 @@ cd <repo>
 
 The package is written to `out/<OTA name>-fastboot/` by default, where `<OTA name>` comes from the OTA metadata field `post-version`, not the source directory name. For example, `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` maps to `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`.
 
-If the target phone is connected over ADB (USB debugging enabled), the converter first reads its properties, partitions and mounted sizes, and prefers the device-reported OEM/VGC identity and model information. When ADB cannot read the exact `super` size, the phone is automatically rebooted to the bootloader, the remaining data is read with `fastboot getvar`, and the phone is rebooted back to Android. The probe never writes, flashes or unlocks anything. To skip the probe:
+By default the converter does **not** read a connected phone, so the same OTA
+and flags always produce the same `super.img`. Pass `--probe-device` to read
+the `super` size, OEM/VGC identity or devcfg type from the current phone:
 
 ```bash
-./ota2fastboot.py /path/to/<full-ota> --no-device
+./ota2fastboot.py /path/to/<full-ota> --probe-device
 ```
 
-Use `--serial` to choose the ADB device when more than one is connected. To validate and print the plan without writing images:
+The probe accepts **ADB connections only** (USB debugging enabled). When ADB
+cannot read the exact `super` size, the phone is automatically rebooted to the
+bootloader, the remaining data is read with `fastboot getvar`, and the phone is
+rebooted back to Android. The probe never writes, flashes or unlocks anything.
+Use `--serial` when more than one device is connected. Release packages should
+pin `--device-size` instead of relying on a probe.
+
+To validate and print the plan without writing images:
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
@@ -234,7 +246,9 @@ at build time to keep every variant.
 Generated packages disable verification and force-encryption by default:
 
 - The `fstab.qcom` inside the `boot.img` and `vendor_boot.img` ramdisks and
-  `/etc/fstab.qcom` inside `vendor.img` are rewritten.
+  `/etc/fstab.qcom` inside `vendor.img` are rewritten.  The vendor image may be
+  ext4 or EROFS; both Android 12 and Android 15 layouts are detected
+  automatically.
 - Flags such as `avb=...`, `avb_keys=...`, `avb`, `verify`, `vverify`,
   `fileencryption=...`, `keydirectory=...`, `metadata_encryption=...`,
   `keepverity` and `keepforceencrypt` are removed.
@@ -242,8 +256,10 @@ Generated packages disable verification and force-encryption by default:
   `--disable-verity --disable-verification`.
 
 The patch keeps every file size unchanged by padding the removed flags with
-spaces, so no cpio archive has to be rebuilt and no EROFS inode size changes.
-The AVB chain is verified on the original OTA images before the patch runs.
+spaces, so no cpio archive has to be rebuilt and no ext4 inode or EROFS
+metadata changes.  The AVB chain is verified on the original OTA images before
+the patch runs.  A signed boot v4 ramdisk may grow as long as it stays within
+its original page count.
 
 Pass `--keep-avb` at build time to keep the stock verification and encryption
 settings. The generated `package.env` records the final state in
@@ -263,17 +279,19 @@ run `fastboot -w` yourself when needed (this erases all data).
 | Option | Description |
 | --- | --- |
 | `--output DIR` | Output directory |
-| `--oem NAME\|auto\|none` | OEM variant placed in `super`. Default `auto`: prefers the connected device's OEM identity, otherwise the OTA device's `FULL_SC_NULL` |
-| `--vgc NAME\|auto\|none` | VGC variant placed in `super`. Default `auto`: prefers the connected device's VGC identity, otherwise `V000` |
-| `--device-size SIZE` | Device `super` partition size. Defaults to the size read over ADB or in the bootloader, otherwise `15032385536` (14 GiB, iQOO 9 / 9 Pro) |
-| `--serial SERIAL` | ADB device serial to probe; default is the first ADB device |
+| `--oem NAME\|auto\|none` | OEM variant placed in `super`. Default `auto`: uses the `--probe-device` identity, otherwise a matching `FULL_SC` variant from the OTA |
+| `--vgc NAME\|auto\|none` | VGC variant placed in `super`. Default `auto`: uses the `--probe-device` identity, otherwise `V000` |
+| `--device-size SIZE` | Device `super` partition size. Default `15032385536` (14 GiB, iQOO 9 / 9 Pro); `--probe-device` uses the phone value |
+| `--devcfg-type auto\|0\|1` | `0` packages `devcfg.mbn`, `1` packages `devcfg_overlay1.mbn`; `auto` reads `ro.vivo.boot.devcfg_type` when probing, otherwise uses `0` |
+| `--serial SERIAL` | ADB device serial for `--probe-device`; default is the first ADB device |
 | `--keep-serial` | Keep the full device serial in the reports and log; default keeps only the last four characters |
 | `--all-oem` | Package every OEM repair variant from the OTA; default keeps only the variant placed in `super` |
 | `--target-platform PLATFORM` | Package target: `linux`, `windows` or `macos`; default follows the build host. `linux` / `macos` get bash scripts, `windows` gets PowerShell plus `.cmd` |
 | `--platform-tools-dir DIR` | Windows target only: copy `adb.exe` / `fastboot.exe` from this directory into `platform-tools/`; omitted means skip |
-| `--no-device` | Do not probe a connected device |
-| `--require-device` | Fail when no compatible ADB device is connected |
-| `--skip-device-check` | Use a connected device even when it does not match the OTA |
+| `--probe-device` | Read a connected phone (ADB, then the bootloader when needed) and use its `super` size, OEM/VGC identity, devcfg type and model; off by default |
+| `--require-device` | Same as `--probe-device`, and fail when no compatible device is connected |
+| `--no-device` | Legacy no-op; no probe happens by default |
+| `--skip-device-check` | With `--probe-device`, use the phone even when it does not match the OTA |
 | `--scripts-dir DIR` | Script template root containing `bash/` and `windows/`; default `scripts/` in the repository |
 | `--dry-run` | Parse, validate and print the plan only |
 | `--resume` | Keep an existing output directory and continue |
@@ -300,7 +318,8 @@ Examples:
 ./ota2fastboot.py /path/to/<full-ota> --device-size 8GiB
 
 # Probe one specific ADB device and require it to exist and match the OTA
-./ota2fastboot.py /path/to/<full-ota> --serial <serial> --require-device
+./ota2fastboot.py /path/to/<full-ota> \
+    --probe-device --serial <serial> --require-device
 
 # Windows target with bundled platform-tools
 ./ota2fastboot.py /path/to/<full-ota> \
@@ -311,24 +330,29 @@ Examples:
 ./ota2fastboot.py /path/to/<full-ota> --all-oem
 ```
 
-## Probing an ADB device
+## Probing an ADB device (optional)
 
-The converter accepts **ADB connections only**. A phone that is visible only in Fastboot is not probed; boot Android and enable USB debugging first. The probe never writes, flashes or unlocks anything.
+No probe happens by default. Add `--probe-device` or `--require-device` to
+read the connected phone. The converter accepts **ADB connections only**. A
+phone that is visible only in Fastboot is not probed; boot Android and enable
+USB debugging first. The probe never writes, flashes or unlocks anything.
 
 | Stage | Read | Used for |
 | --- | --- | --- |
-| ADB | `getprop` (model, OEM/VGC identity, Android version, fingerprint, unlock state), `/dev/block/mapper`, `df -k` | OEM/VGC selection, model check, `MODEL_REGEX`, build report |
+| ADB | `getprop` (model, OEM/VGC identity, Android version, fingerprint, unlock state, `ro.vivo.boot.devcfg_type`), `/dev/block/mapper`, `df -k` | OEM/VGC selection, devcfg type, model check, `MODEL_REGEX`, build report |
 | Automatic bootloader pass | `fastboot getvar all` (`partition-size:super`, `current-slot`, `unlocked`, ...), `fastboot oem product-model` | The `super` size and current slot that ADB cannot read; the phone is rebooted back to Android afterwards |
 
+- Without `--probe-device`, `super` comes from `--device-size` or the 14 GiB default; OEM/VGC use the OTA auto-selection; devcfg defaults to type `0`.
 - The phone is rebooted to the bootloader only when ADB cannot provide the exact `super` size and `--device-size` was not given; otherwise no reboot happens.
 - If the bootloader does not appear within the timeout, or reading fails, the build continues with the ADB data and defaults.
 - A device-reported `super` size, or the value read in the bootloader, takes precedence over the built-in default; an explicit `--device-size` still wins.
-- When the device-reported OEM identity exists in the OTA, `--oem auto` selects it directly; VGC works the same way.
+- When the device-reported OEM identity exists in the OTA, `--oem auto` selects it directly; VGC works the same way. When converting across Android versions the newer identity may be absent from the older OTA; the build falls back to the OTA model match and records that in the log.
 - When the device model does not match the OTA `pre-device` / `hardware-device`, device data is ignored by default and the package follows the OTA metadata. `--skip-device-check` forces the device data, while `--require-device` requires a compatible ADB device.
 - The device model / product values are appended to `MODEL_REGEX` in `package.env`, so the flash-time check accepts the real device.
 - The probe result is written to `target_device` in `meta/build.json` and included in `meta/BUILD.md`; the serial is masked to its last four characters by default.
 - The device serial is also masked in the build log; use `--keep-serial` to keep it in full.
 - Rebooting to the bootloader and back takes some time; keep the USB cable connected.
+- For reproducible release packages, do **not** pass `--probe-device`; pin `--device-size` instead.
 
 ## Verification
 
@@ -342,7 +366,7 @@ The converter accepts **ADB connections only**. A phone that is visible only in 
 
    With the default AVB removal this runs on the original OTA images before
    the patch; the patched images are not AVB-verified.
-4. Script reference check: every required image referenced by the target package's `flash` / `flash-full` scripts exists
+4. Flash-item lists: every required image in the generated `firmware-update/flash-items-*.txt` exists
 5. The sparse image expands to exactly the requested `super` size (`--device-size`, the device probe value, or the default)
 6. The SHA-256 manifest can be verified:
 
@@ -395,7 +419,7 @@ $env:SKIP_MODEL_CHECK = "1"
 
 **"System corrupt" or wrong OEM identity**: run `./fix-oem.sh` (on Windows, `.\fix-oem.cmd`) and select the variant that matches the phone; rebuild with `--all-oem` if that variant was not packaged.
 
-**Wrong `super.img` size**: connect the target device over ADB so the converter can read the real size; a Fastboot-only connection is not probed. Alternatively pass `--device-size`. The converter does not read a package already installed on the host to guess the size.
+**Wrong `super.img` size**: pass `--device-size` explicitly, or add `--probe-device` to read the target phone. The default is 14 GiB. The converter does not read a package already installed on the host to guess the size.
 
 ## Repository layout
 

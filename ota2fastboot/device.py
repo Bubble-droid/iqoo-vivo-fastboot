@@ -63,6 +63,7 @@ PROP_KEYS = (
     "ro.boot.vbmeta.device_state",
     "ro.boot.flash.locked",
     "ro.boot.super_partition_size",
+    "ro.vivo.boot.devcfg_type",
 )
 
 # Mount points of the dynamic partitions, used to record the mounted sizes.

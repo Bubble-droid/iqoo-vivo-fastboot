@@ -28,28 +28,26 @@ require_fastboot
 require_tty
 set_title "${PACKAGE_TITLE:-vivo/iQOO fastboot package} (safe)"
 
-SAFE_ITEMS=(
-    "boot|firmware-update/boot.img"
-    "dtbo|firmware-update/dtbo.img"
-    "vendor_boot|firmware-update/vendor_boot.img"
-    "recovery|firmware-update/recovery.img|optional"
-    "vm-bootsys|firmware-update/vm-bootsys.img|optional"
-    "vbmeta|firmware-update/vbmeta.img"
-    "vbmeta_system|firmware-update/vbmeta_system.img|optional"
-    "vbmeta_vgc|firmware-update/vbmeta_vgc.img|optional"
-)
+SAFE_ITEMS=()
+[ -f firmware-update/flash-items-safe.txt ] || die "firmware-update/flash-items-safe.txt not found; package is incomplete"
+while IFS= read -r item; do
+    case "$item" in
+    '' | '#'*) continue ;;
+    esac
+    SAFE_ITEMS+=("$item")
+done <firmware-update/flash-items-safe.txt
 
 if [ "${FLASH_SAFE_WITH_MODEM:-0}" = "1" ]; then
-    SAFE_ITEMS+=(
-        "modem|firmware-update/NON-HLOS.bin|optional"
-        "dsp|firmware-update/dspso.bin|optional"
-        "bluetooth|firmware-update/BTFM.bin|optional"
-        "qupfw|firmware-update/qupv3fw.elf|optional"
-    )
+    if [ -f firmware-update/flash-items-modem.txt ]; then
+        while IFS= read -r item; do
+            case "$item" in
+            '' | '#'*) continue ;;
+            esac
+            SAFE_ITEMS+=("$item")
+        done <firmware-update/flash-items-modem.txt
+    fi
     echo " -- FLASH_SAFE_WITH_MODEM=1: the modem group will be written too."
 fi
-
-SAFE_ITEMS+=("super|firmware-update/super.img")
 
 preflight_items "${SAFE_ITEMS[@]}"
 

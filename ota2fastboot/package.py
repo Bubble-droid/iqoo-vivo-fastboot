@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import shlex
 import shutil
 from pathlib import Path
@@ -91,6 +90,9 @@ def write_package_env(
     model_regex: str,
     oem_name: str,
     avb_stripped: bool,
+    super_size: int,
+    super_size_source: str,
+    devcfg_type: int,
     log: Log,
 ) -> None:
     version = props.get("post-version") or out.name
@@ -104,6 +106,9 @@ def write_package_env(
         f"MODEL_REGEX={shlex.quote(model_regex)}",
         f"OEM_IDENTITY={shlex.quote(identity)}",
         f"AVB_STRIPPED={1 if avb_stripped else 0}",
+        f"SUPER_SIZE={super_size}",
+        f"SUPER_SIZE_SOURCE={shlex.quote(super_size_source)}",
+        f"DEVCFG_TYPE={devcfg_type}",
         "",
     ]
     path = out / "package.env"
@@ -123,21 +128,27 @@ def check_script_contract(out: Path, platform: str, log: Log) -> None:
     optional_missing: list[str] = []
     checked = 0
     for name in flash_scripts:
-        script = out / name
-        if not script.is_file():
+        if not (out / name).is_file():
             raise ToolError(f"missing generated script: {name}")
-        text = script.read_text(encoding="utf-8")
-        for match in re.finditer(
-            r'"([a-z0-9_-]+)\|(firmware-update/[^"|]+)(?:\|(optional))?"', text
-        ):
-            relative = match.group(2)
-            optional = match.group(3) == "optional"
+    for list_name in ("flash-items-full.txt", "flash-items-safe.txt"):
+        list_path = out / "firmware-update" / list_name
+        if not list_path.is_file():
+            raise ToolError(f"missing generated flash list: {list_name}")
+        for line in list_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            fields = line.split("|")
+            if len(fields) < 2:
+                raise ToolError(f"{list_name}: malformed item: {line}")
+            relative = fields[1]
+            optional = len(fields) >= 3 and fields[2] == "optional"
             checked += 1
             if not (out / relative).is_file():
                 if optional:
                     optional_missing.append(relative)
                 else:
-                    raise ToolError(f"{name} requires a missing file: {relative}")
+                    raise ToolError(f"{list_name} requires a missing file: {relative}")
 
     for name in support_scripts:
         if not (out / name).is_file():

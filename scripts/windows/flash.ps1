@@ -25,28 +25,19 @@ Assert-Interactive
 $title = if ($script:PackageTitle) { $script:PackageTitle } else { 'vivo/iQOO fastboot package' }
 Set-Title "$title (safe)"
 
-$items = @(
-    "boot|firmware-update/boot.img"
-    "dtbo|firmware-update/dtbo.img"
-    "vendor_boot|firmware-update/vendor_boot.img"
-    "recovery|firmware-update/recovery.img|optional"
-    "vm-bootsys|firmware-update/vm-bootsys.img|optional"
-    "vbmeta|firmware-update/vbmeta.img"
-    "vbmeta_system|firmware-update/vbmeta_system.img|optional"
-    "vbmeta_vgc|firmware-update/vbmeta_vgc.img|optional"
-)
+$safeList = 'firmware-update/flash-items-safe.txt'
+if (-not (Test-Path -LiteralPath $safeList -PathType Leaf)) {
+    Die 'firmware-update/flash-items-safe.txt not found; package is incomplete'
+}
+$items = @(Get-Content -LiteralPath $safeList | Where-Object { $_ -and -not $_.StartsWith('#') })
 
 if ($env:FLASH_SAFE_WITH_MODEM -eq '1') {
-    $items += @(
-        "modem|firmware-update/NON-HLOS.bin|optional"
-        "dsp|firmware-update/dspso.bin|optional"
-        "bluetooth|firmware-update/BTFM.bin|optional"
-        "qupfw|firmware-update/qupv3fw.elf|optional"
-    )
+    $modemList = 'firmware-update/flash-items-modem.txt'
+    if (Test-Path -LiteralPath $modemList -PathType Leaf) {
+        $items += @(Get-Content -LiteralPath $modemList | Where-Object { $_ -and -not $_.StartsWith('#') })
+    }
     Write-Host ' -- FLASH_SAFE_WITH_MODEM=1: the modem group will be written too.'
 }
-
-$items += "super|firmware-update/super.img"
 
 Test-PreflightItems -Items $items
 

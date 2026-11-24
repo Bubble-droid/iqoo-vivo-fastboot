@@ -1,7 +1,15 @@
-"""Copying the physical images referenced by ``flash.sh``."""
+"""Copying the physical images referenced by the flash scripts.
+
+The OTA's ``updater-script`` is the authoritative list of physical partitions
+and their source files.  The static table below covers the names used by every
+released build so far; files that only appear in newer OTAs are added from the
+updater script automatically.  The generated flash-item lists keep the target
+scripts independent of the OTA version.
+"""
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -47,14 +55,58 @@ FIRMWARE_MAP = [
     ("devcfg", ["firmware-update/devcfg.mbn"], "devcfg.mbn", True),
 ]
 
+EXTRACT_CALL = re.compile(
+    r'package_extract_file\(\s*"([^"]+)"\s*,\s*"[^"]*by-name/([^"]+)"\s*\)'
+)
+VBMETA_VARIANT = re.compile(r"firmware-update/vbmeta_(?:oem|vgc)_")
 
-def copy_firmware(package: Path, out_fw: Path, log: Log) -> list[dict]:
-    records: list[dict] = []
-    seen: set[str] = set()
+# Android-only and modem groups for the safe flash script.
+SAFE_PARTITIONS = (
+    "boot",
+    "dtbo",
+    "vendor_boot",
+    "recovery",
+    "vm-bootsys",
+    "vbmeta",
+    "vbmeta_system",
+    "vbmeta_vgc",
+    "super",
+)
+MODEM_PARTITIONS = ("modem", "dsp", "bluetooth", "qupfw")
+
+
+def _updater_mappings(package: Path) -> list[tuple[str, str]]:
+    """Return ``(source, partition)`` pairs in updater-script order."""
+
+    script = package / "META-INF" / "com" / "google" / "android" / "updater-script"
+    if not script.is_file():
+        return []
+    try:
+        text = script.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    pairs: list[tuple[str, str]] = []
+    for match in EXTRACT_CALL.finditer(text):
+        source, partition = match.group(1), match.group(2)
+        if not source.startswith("firmware-update/"):
+            continue
+        if VBMETA_VARIANT.match(source):
+            continue
+        if (source, partition) not in pairs:
+            pairs.append((source, partition))
+    return pairs
+
+
+def firmware_entries(
+    package: Path, devcfg_type: int, log: Log
+) -> list[dict]:
+    """Return the copy list for this OTA, including version-specific files."""
+
+    entries: list[dict] = []
+    seen_sources: set[Path] = set()
+    seen_names: set[str] = set()
+
     for partition, candidates, out_name, required in FIRMWARE_MAP:
-        if out_name in seen:
-            raise ToolError(f"duplicate output name {out_name}")
-        seen.add(out_name)
         source = None
         for candidate in candidates:
             path = package / candidate
@@ -62,34 +114,149 @@ def copy_firmware(package: Path, out_fw: Path, log: Log) -> list[dict]:
                 source = path
                 break
         if source is None:
-            if not required:
-                log(f"  skip {partition}: none of {', '.join(candidates)}")
-                continue
-            raise ToolError(
-                f"package needs {partition} but the OTA has none of: "
-                + ", ".join(candidates)
-            )
-        destination = out_fw / out_name
-        shutil.copy2(source, destination)
-        records.append(
+            if required:
+                raise ToolError(
+                    f"package needs {partition} but the OTA has none of: "
+                    + ", ".join(candidates)
+                )
+            continue
+        seen_sources.add(source.resolve())
+        seen_names.add(out_name)
+        entries.append(
             {
                 "partition": partition,
-                "file": f"firmware-update/{out_name}",
-                "source": source.relative_to(package).as_posix(),
-                "size": destination.stat().st_size,
+                "source": source,
+                "out_name": out_name,
+                "optional": not required,
             }
         )
-        log(f"  {partition} <- {source.relative_to(package).as_posix()}")
+
+    # Newer OTAs may add physical partitions.  The updater script names both
+    # the source file and the by-name target, so no table update is needed.
+    for relative, partition in _updater_mappings(package):
+        path = package / relative
+        if not path.is_file():
+            continue
+        if path.resolve() in seen_sources or path.name in seen_names:
+            continue
+        entries.append(
+            {
+                "partition": partition,
+                "source": path,
+                "out_name": path.name,
+                "optional": True,
+            }
+        )
+        seen_sources.add(path.resolve())
+        seen_names.add(path.name)
+        log(
+            f"  {partition} <- {relative} "
+            "(adaptive: not in the static firmware table)"
+        )
+
+    entries = _select_devcfg(entries, devcfg_type, log)
+    return entries
+
+
+def _select_devcfg(entries: list[dict], devcfg_type: int, log: Log) -> list[dict]:
+    """Keep only the devcfg image the OTA updater would write."""
+
+    options = [entry for entry in entries if entry["partition"] == "devcfg"]
+    if not options:
+        return entries
+    wanted_overlay = devcfg_type == 1
+    chosen = None
+    for entry in options:
+        is_overlay = "overlay" in entry["source"].name.lower()
+        if is_overlay == wanted_overlay:
+            chosen = entry
+            break
+    if chosen is None:
+        chosen = options[0]
+        log(
+            f"  devcfg: requested type {devcfg_type} has no matching image; "
+            f"using {chosen['out_name']}"
+        )
+    return [
+        entry
+        for entry in entries
+        if entry["partition"] != "devcfg" or entry is chosen
+    ]
+
+
+def copy_firmware(
+    package: Path,
+    out_fw: Path,
+    log: Log,
+    devcfg_type: int = 0,
+) -> list[dict]:
+    records: list[dict] = []
+    for entry in firmware_entries(package, devcfg_type, log):
+        destination = out_fw / entry["out_name"]
+        shutil.copy2(entry["source"], destination)
+        records.append(
+            {
+                "partition": entry["partition"],
+                "file": f"firmware-update/{entry['out_name']}",
+                "source": entry["source"].relative_to(package).as_posix(),
+                "size": destination.stat().st_size,
+                "optional": entry["optional"],
+            }
+        )
+        log(f"  {entry['partition']} <- {entry['source'].relative_to(package).as_posix()}")
     return records
 
 
 def firmware_size(package: Path) -> int:
-    """Total size of the first existing candidate of every firmware entry."""
+    """Total size of every source file that may be copied."""
+
     total = 0
+    names = {name for _, _, name, _ in FIRMWARE_MAP}
     for _, candidates, _, _ in FIRMWARE_MAP:
         for candidate in candidates:
             path = package / candidate
             if path.is_file():
                 total += path.stat().st_size
                 break
+    for relative, _ in _updater_mappings(package):
+        path = package / relative
+        if path.is_file() and path.name not in names:
+            total += path.stat().st_size
     return total
+
+
+def _item_line(record: dict) -> str:
+    line = f"{record['partition']}|{record['file']}"
+    if record["optional"]:
+        line += "|optional"
+    return line
+
+
+def write_flash_items(out: Path, records: list[dict], log: Log) -> None:
+    """Write the flash lists consumed by the packaged scripts."""
+
+    full = [_item_line(record) for record in records]
+    for name in ("vm-bootsys", "vbmeta_vgc"):
+        image = out / "firmware-update" / f"{name}.img"
+        if image.is_file():
+            full.append(f"{name}|firmware-update/{name}.img|optional")
+    super_image = out / "firmware-update" / "super.img"
+    if super_image.is_file():
+        full.append("super|firmware-update/super.img")
+
+    safe = [line for line in full if line.split("|", 1)[0] in SAFE_PARTITIONS]
+    modem = [line for line in full if line.split("|", 1)[0] in MODEM_PARTITIONS]
+
+    for filename, lines in (
+        ("flash-items-full.txt", full),
+        ("flash-items-safe.txt", safe),
+        ("flash-items-modem.txt", modem),
+    ):
+        path = out / "firmware-update" / filename
+        path.write_text(
+            "# Generated by ota2fastboot.py. Do not edit by hand.\n"
+            + "\n".join(lines)
+            + "\n",
+            encoding="utf-8",
+        )
+        log(f"  {filename}: {len(lines)} items")

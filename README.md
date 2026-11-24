@@ -16,7 +16,10 @@
 - 支持分段 `*.new.dat`、`*.new.dat.1..N`、单文件 Brotli `*.new.dat.br`
 - 重建 `vm-bootsys` 等 `super` 之外的块镜像（OTA 提供时）
 - 用 `lpmake` 生成与设备 `super` 分区同尺寸的稀疏 `super.img`
-- 构建时可选读取 ADB 连接的设备，用实际 `super` 大小、OEM/VGC 身份和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
+- 构建时默认不读取设备；需要时加 `--probe-device`，用实际 `super` 大小、OEM/VGC 身份、`devcfg` 类型和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
+- 自适应 Android 12 / Android 15 两类固件：boot v3/v4、vendor_boot v3/v4、LZ4 ramdisk、ext4 或 EROFS vendor、不同物理分区集合与 OEM/VGC 变体数量
+- 从 OTA 的 `updater-script` 自动补全静态表之外的物理分区（如 A15 的 `qweslicstore`、`rtice`），并生成刷机脚本读取的镜像清单
+- `devcfg` 按 `ro.vivo.boot.devcfg_type` 只打包并刷写匹配的镜像（`--devcfg-type` 可覆盖）
 - 提取选中 OEM 制式的修复镜像；加 `--all-oem` 时提取全部制式
 - 提取 `vgc/` 变体并写入 `super`
 - 复制完整线刷脚本所需的 bootloader、modem、xbl、tz 等物理镜像
@@ -38,7 +41,7 @@
 | `e2fsck` | 校验 ext4 分区镜像 |
 | `avbtool` | 校验 AVB 签名与链式分区 |
 | `liblz4` | 默认移除 AVB 时重压缩 ramdisk 与 EROFS fstab |
-| `adb` / `fastboot` | 构建时通过 ADB 探测；必要时自动进 bootloader 读取，刷机时使用 |
+| `adb` / `fastboot` | 仅在 `--probe-device` / `--require-device` 时探测；刷机时使用 |
 | `bash` | Linux / macOS 包的刷机脚本 |
 | PowerShell 5.1+ | Windows 包的刷机脚本；Windows 10/11 自带 |
 
@@ -82,13 +85,17 @@ cd <repo>
 
 默认输出到 `out/<OTA 名称>-fastboot/`，其中 `<OTA 名称>` 取自 OTA 元数据的 `post-version`，而非来源目录名。例如 `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` 对应 `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`。
 
-若目标手机以 ADB 连接（已开启 USB 调试），转换器会先读取设备属性、分区和挂载信息，并优先使用设备报告的 OEM/VGC 身份与机型信息。ADB 普通权限读不到 `super` 精确大小时，会自动重启到 bootloader，用 `fastboot getvar` 读完剩余数据，再自动重启回 Android。整个过程不写入、不刷机、不解锁。跳过探测：
+默认**不读取**已连接设备，产物只由 OTA 与命令行参数决定，因此同一个 OTA
+重复构建得到相同的 `super.img`。需要按当前手机读取 `super` 大小、OEM/VGC
+身份或 `devcfg` 类型时，显式加 `--probe-device`：
 
 ```bash
-./ota2fastboot.py /path/to/<full-ota> --no-device
+./ota2fastboot.py /path/to/<full-ota> --probe-device
 ```
 
-多设备时用 `--serial` 指定要探测的 ADB 设备。先看计划、不写镜像：
+探测只接受 ADB 连接（已开启 USB 调试）。ADB 普通权限读不到 `super` 精确大小时，会自动重启到 bootloader，用 `fastboot getvar` 读完剩余数据，再自动重启回 Android。整个过程不写入、不刷机、不解锁。多设备时用 `--serial` 指定。发布包建议固定 `--device-size`，不要依赖探测结果。
+
+先看计划、不写镜像：
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
@@ -230,15 +237,17 @@ OEM 修复：
 生成的包默认按“关闭校验、取消强制加密”的方向处理：
 
 - 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及
-  `vendor.img` 的 `/etc/fstab.qcom`；
+  `vendor.img` 的 `/etc/fstab.qcom`；`vendor.img` 为 ext4 或 EROFS 时自动识别，
+  Android 12 与 Android 15 的两种格式都支持；
 - 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、
   `fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、
   `keepverity`、`keepforceencrypt` 等标记；
 - 写入 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 时附加
   `--disable-verity --disable-verification`。
 
-补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio 或
-修改 EROFS inode 大小。AVB 链校验在打补丁之前对原始 OTA 镜像完成。
+补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio，
+也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成。
+带 boot v4 签名的 ramdisk 只要新帧仍在原页数内就允许增长；跨页才报错。
 
 若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的
 `AVB_STRIPPED` 会记录最终状态，刷机脚本据此决定是否附加禁用参数。
@@ -255,17 +264,19 @@ OEM 修复：
 | 选项 | 说明 |
 | --- | --- |
 | `--output DIR` | 指定输出目录 |
-| `--oem NAME\|auto\|none` | 放进 `super` 的 OEM 制式。默认 `auto`：优先使用 ADB 设备报告的 OEM 身份，否则匹配 OTA 机型的 `FULL_SC_NULL` |
-| `--vgc NAME\|auto\|none` | 放进 `super` 的 VGC 变体。默认 `auto`：优先使用 ADB 设备报告的 VGC 身份，否则优先 `V000` |
-| `--device-size SIZE` | 设备 `super` 分区大小。默认取 ADB 或 bootloader 读取的实际大小，否则 `15032385536`（14 GiB，iQOO 9 / 9 Pro） |
-| `--serial SERIAL` | 指定要探测的 ADB 设备；默认使用第一个 ADB 设备 |
+| `--oem NAME\|auto\|none` | 放进 `super` 的 OEM 制式。默认 `auto`：使用 `--probe-device` 报告的 OEM 身份，否则匹配 OTA 机型的 `FULL_SC` 变体 |
+| `--vgc NAME\|auto\|none` | 放进 `super` 的 VGC 变体。默认 `auto`：使用 `--probe-device` 报告的 VGC 身份，否则优先 `V000` |
+| `--device-size SIZE` | 设备 `super` 分区大小。默认 `15032385536`（14 GiB，iQOO 9 / 9 Pro）；`--probe-device` 时改用手机报告值 |
+| `--devcfg-type auto\|0\|1` | 选择 `devcfg` 镜像：`0` 用 `devcfg.mbn`，`1` 用 `devcfg_overlay1.mbn`；`auto` 在探测时读取 `ro.vivo.boot.devcfg_type`，否则按 `0` |
+| `--serial SERIAL` | 配合 `--probe-device` 指定 ADB 设备；默认使用第一个 ADB 设备 |
 | `--keep-serial` | 在报告与日志中保留完整设备序列号；默认只保留后四位 |
 | `--all-oem` | 打包 OTA 内全部 OEM 修复变体；默认只保留写入 `super` 的变体 |
 | `--target-platform PLATFORM` | 包目标平台：`linux`、`windows`、`macos`；默认跟随制作系统。`linux` / `macos` 生成 bash 脚本，`windows` 生成 PowerShell + `.cmd` |
 | `--platform-tools-dir DIR` | 仅 Windows 目标：把该目录的 `adb.exe` / `fastboot.exe` 复制到包内 `platform-tools/`；省略则跳过 |
-| `--no-device` | 不探测已连接设备 |
-| `--require-device` | 没有兼容的 ADB 设备时直接失败 |
-| `--skip-device-check` | 设备与 OTA 机型不匹配时仍使用设备数据 |
+| `--probe-device` | 读取已连接手机（ADB，必要时进 bootloader），使用其 `super` 大小、OEM/VGC 身份、`devcfg` 类型与机型；默认关闭 |
+| `--require-device` | 等同于 `--probe-device`，且没有兼容设备时直接失败 |
+| `--no-device` | 旧参数，保留兼容；现在默认就不探测 |
+| `--skip-device-check` | 配合 `--probe-device`，设备与 OTA 机型不匹配时仍使用设备数据 |
 | `--scripts-dir DIR` | 脚本模板根目录，需包含 `bash/` 与 `windows/`，默认仓库内 `scripts/` |
 | `--dry-run` | 只解析、校验并打印计划 |
 | `--resume` | 保留已有输出目录继续执行 |
@@ -292,7 +303,8 @@ OEM 修复：
 ./ota2fastboot.py /path/to/<full-ota> --device-size 8GiB
 
 # 只探测指定 ADB 设备，并要求它必须存在且与 OTA 匹配
-./ota2fastboot.py /path/to/<full-ota> --serial <serial> --require-device
+./ota2fastboot.py /path/to/<full-ota> \
+    --probe-device --serial <serial> --require-device
 
 # Windows 目标，并附带 platform-tools
 ./ota2fastboot.py /path/to/<full-ota> \
@@ -303,24 +315,27 @@ OEM 修复：
 ./ota2fastboot.py /path/to/<full-ota> --all-oem
 ```
 
-## 读取 ADB 设备
+## 读取 ADB 设备（可选）
 
+默认不探测设备。只有传入 `--probe-device` 或 `--require-device` 时才读取。
 转换器只接受 **ADB 连接**。若手机只处于 Fastboot 模式，不会探测；请先启动 Android 并开启 USB 调试。探测不写入、不刷机、不解锁。
 
 | 阶段 | 读取内容 | 用途 |
 | --- | --- | --- |
-| ADB | `getprop`（机型、OEM/VGC 身份、Android 版本、指纹、解锁状态）、`/dev/block/mapper`、`df -k` | 选择 OEM/VGC、机型校验、`MODEL_REGEX`、构建报告 |
+| ADB | `getprop`（机型、OEM/VGC 身份、Android 版本、指纹、解锁状态、`ro.vivo.boot.devcfg_type`）、`/dev/block/mapper`、`df -k` | 选择 OEM/VGC、`devcfg` 类型、机型校验、`MODEL_REGEX`、构建报告 |
 | 自动进 bootloader | `fastboot getvar all`（`partition-size:super`、`current-slot`、`unlocked` 等）、`fastboot oem product-model` | ADB 读不到的 `super` 大小、当前槽位等；读完自动 `fastboot reboot` 回 Android |
 
-- ADB 取不到 `super` 精确大小时，才自动重启进 bootloader；若 ADB 已能读到，或显式传了 `--device-size`，则不会重启。
+- 不传 `--probe-device` 时，`super` 大小取 `--device-size`，否则为 14 GiB；OEM/VGC 取 OTA 自动匹配结果；`devcfg` 默认按类型 `0`。
+- 探测时 ADB 取不到 `super` 精确大小，才自动重启进 bootloader；若 ADB 已能读到，或显式传了 `--device-size`，则不会重启。
 - 进 bootloader 后若在超时内未出现，或读取失败，则继续使用 ADB 数据与默认值，不中断构建。
-- ADB 设备报告的 `super` 大小或 bootloader 读取值优先于内置默认值；显式传入 `--device-size` 时仍以命令行为准。
-- 设备报告的 OEM 身份存在于 OTA 中时，`--oem auto` 直接选它；VGC 同理。
+- 设备报告的 `super` 大小或 bootloader 读取值优先于内置默认值；显式传入 `--device-size` 时仍以命令行为准。
+- 设备报告的 OEM 身份存在于 OTA 中时，`--oem auto` 直接选它；VGC 同理。跨 Android 版本转换时，新版本身份可能不在旧 OTA 中，此时会回退到 OTA 机型匹配并记录日志。
 - 设备机型与 OTA 的 `pre-device` / `hardware-device` 不匹配时，默认忽略设备数据，继续按 OTA 元数据构建；`--skip-device-check` 强制使用设备数据，`--require-device` 要求必须有兼容的 ADB 设备。
 - 设备报告的 model / product 会追加到 `package.env` 的 `MODEL_REGEX`，让刷机时的机型检查接受真实设备。
 - 探测结果写入 `meta/build.json` 的 `target_device` 字段，并出现在 `meta/BUILD.md` 中；序列号默认脱敏为后四位。
 - 构建日志中的设备序列号同样默认脱敏；需要完整记录时加 `--keep-serial`。
 - ADB 重启至 bootloader 再返回 Android 需要一定时间；期间请保持 USB 连接。
+- 为了可复现产物，发布包建议 **不加** `--probe-device`，并显式指定 `--device-size`。
 
 ## 校验内容
 
@@ -333,7 +348,7 @@ OEM 修复：
    - `vbmeta_vgc`
 
    默认移除 AVB 时，这一步在打补丁之前对原始 OTA 镜像执行；打补丁后不再校验 AVB。
-4. 脚本引用检查：目标平台对应的 `flash` / `flash-full` 脚本中每个必需镜像都存在
+4. 脚本引用检查：生成的 `firmware-update/flash-items-*.txt` 中每个必需镜像都存在
 5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
 
@@ -385,7 +400,7 @@ $env:SKIP_MODEL_CHECK = "1"
 
 **系统提示“系统破损”或 OEM 不对**：运行 `./fix-oem.sh`（Windows 用 `.\fix-oem.cmd`），选择与手机一致的制式；包内没有该制式时，重新构建并加 `--all-oem`。
 
-**生成的 `super.img` 尺寸不对**：用 ADB 连接目标设备后让转换器自动读取；仅处于 Fastboot 模式时不会探测。也可用 `--device-size` 指定。转换器不会读取本机已安装的包来猜测尺寸。
+**生成的 `super.img` 尺寸不对**：用 `--device-size` 显式指定；或加 `--probe-device` 让转换器读取目标手机。默认 14 GiB。转换器不会读取本机已安装的包来猜测尺寸。
 
 ## 目录说明
 

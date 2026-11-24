@@ -19,7 +19,7 @@ from .device import (
     probe_device,
 )
 from .errors import ToolError
-from .firmware import copy_firmware, firmware_size
+from .firmware import copy_firmware, firmware_size, write_flash_items
 from .log import Log
 from .ota import TransferList, parse_op_list, read_props
 from .package import check_script_contract, copy_scripts, write_package_env
@@ -477,6 +477,7 @@ def install_scripts(
     args: argparse.Namespace,
     platform: str,
     avb_stripped: bool,
+    devcfg_type: int,
     log: Log,
 ) -> list[str]:
     log("=== package scripts ===")
@@ -488,7 +489,15 @@ def install_scripts(
         return []
     script_names = copy_scripts(scripts_dir, out, platform, log)
     write_package_env(
-        out, props, "|".join(models), plan.oem_name, avb_stripped, log
+        out,
+        props,
+        "|".join(models),
+        plan.oem_name,
+        avb_stripped,
+        plan.device_size,
+        plan.device_size_source,
+        devcfg_type,
+        log,
     )
     check_script_contract(out, platform, log)
     return script_names
@@ -500,8 +509,8 @@ def _probe_target(
     log: Log,
 ) -> DeviceInfo | None:
     log("=== target device ===")
-    if args.no_device:
-        log("  skipped (--no-device)")
+    if not (getattr(args, "probe_device", False) or args.require_device):
+        log("  skipped (default; add --probe-device to read the connected phone)")
         return None
 
     device = probe_device(args.serial, log)
@@ -539,6 +548,33 @@ def _probe_target(
             "unlock the bootloader before flashing"
         )
     return device
+
+
+def _devcfg_type(
+    args: argparse.Namespace,
+    device: DeviceInfo | None,
+    log: Log,
+) -> int:
+    """Resolve which devcfg image the OTA's updater would select."""
+    choice = getattr(args, "devcfg_type", "auto")
+    if choice in ("0", "1"):
+        log(f"devcfg type: {choice} (--devcfg-type)")
+        return int(choice)
+
+    raw = ""
+    if device is not None:
+        raw = device.props.get("ro.vivo.boot.devcfg_type", "").strip().lower()
+    if raw == "1":
+        log("devcfg type: 1 (ro.vivo.boot.devcfg_type)")
+        return 1
+    if raw in {"0", "null"}:
+        log("devcfg type: 0 (ro.vivo.boot.devcfg_type)")
+        return 0
+    if raw:
+        log(f"devcfg type: 0 (unknown ro.vivo.boot.devcfg_type={raw!r})")
+    else:
+        log("devcfg type: 0 (default; use --probe-device or --devcfg-type 1)")
+    return 0
 
 
 def _package_models(models: list[str], device: DeviceInfo | None) -> list[str]:
@@ -644,6 +680,7 @@ def _run(
     device = probed_device if probed_device and probed_device.used else None
     if device:
         _warn_build_age(device, props, log)
+    devcfg_type = _devcfg_type(args, device, log)
 
     plan = plan_super(
         package,
@@ -692,7 +729,7 @@ def _run(
     raw_dir.mkdir(exist_ok=True)
 
     log("=== copying physical images ===")
-    copy_firmware(package, out_fw, log)
+    firmware_copied = copy_firmware(package, out_fw, log, devcfg_type)
 
     raw_parts = extract_partitions(package, out_fw, raw_dir, plan, args, log)
     packaged_oem = extract_oem_variants(
@@ -729,6 +766,19 @@ def _run(
         avb_patch = patch_images(
             out_fw, raw_parts, log, include_vendor=not args.no_super
         )
+        patched_ext4 = {
+            name: raw_parts[name]
+            for name, report in avb_patch.items()
+            if report and report.get("fs") == "ext4" and name in raw_parts
+        }
+        if patched_ext4 and not args.skip_fsck:
+            log("=== filesystem check (after fstab patch) ===")
+            results = fsck_images(patched_ext4, log)
+            failed = [name for name, ok in results.items() if not ok]
+            if failed:
+                raise ToolError(
+                    "patched image failed e2fsck: " + ", ".join(failed)
+                )
     else:
         log("  skipped (--keep-avb)")
 
@@ -741,6 +791,8 @@ def _run(
         allow_reuse=not bool(avb_patch.get("vendor")),
     )
 
+    write_flash_items(out, firmware_copied, log)
+
     script_names = install_scripts(
         out,
         scripts_dir,
@@ -750,6 +802,7 @@ def _run(
         args,
         target_platform,
         avb_stripped,
+        devcfg_type,
         log,
     )
 
@@ -834,6 +887,8 @@ def _run(
         "super_device_size": plan.device_size,
         "super_device_size_source": plan.device_size_source,
         "super_partitions": plan.sizes,
+        "devcfg_type": devcfg_type,
+        "firmware": firmware_copied,
         "oem_variant": plan.oem_name,
         "oem_variants_packaged": packaged_oem,
         "all_oem_variants": getattr(args, "all_oem", False),

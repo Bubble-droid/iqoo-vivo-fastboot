@@ -21,43 +21,14 @@ require_fastboot
 require_tty
 set_title "${PACKAGE_TITLE:-vivo/iQOO fastboot package}"
 
-FLASH_ITEMS=(
-    "boot|firmware-update/boot.img"
-    "modem|firmware-update/NON-HLOS.bin|optional"
-    "dsp|firmware-update/dspso.bin|optional"
-    "bluetooth|firmware-update/BTFM.bin|optional"
-    "dtbo|firmware-update/dtbo.img"
-    "qupfw|firmware-update/qupv3fw.elf|optional"
-    "keymaster|firmware-update/keymint.mbn|optional"
-    "uefisecapp|firmware-update/uefi_sec.mbn|optional"
-    "uefi|firmware-update/uefi.elf|optional"
-    "shrm|firmware-update/shrm.elf|optional"
-    "multiimgoem|firmware-update/multi_image.mbn|optional"
-    "multiimgqti|firmware-update/multi_image_qti.mbn|optional"
-    "cpucp|firmware-update/cpucp.elf|optional"
-    "abl|firmware-update/abl.elf"
-    "tz|firmware-update/tz.mbn"
-    "aop|firmware-update/aop.mbn"
-    "aop_config|firmware-update/aop_devcfg.mbn|optional"
-    "imagefv|firmware-update/imagefv.elf|optional"
-    "hyp|firmware-update/hypvm.mbn"
-    "xbl_config|firmware-update/xbl_config.elf"
-    "xbl|firmware-update/xbl_s.melf"
-    "storage|firmware-update/firmware.bin|optional"
-    "featenabler|firmware-update/featenabler.mbn|optional"
-    "vbmeta|firmware-update/vbmeta.img"
-    "vbmeta_system|firmware-update/vbmeta_system.img|optional"
-    "vendor_boot|firmware-update/vendor_boot.img"
-    "recovery|firmware-update/recovery.img|optional"
-    "toolsfv|firmware-update/tools.fv|optional"
-    "xbl_ramdump|firmware-update/XblRamdump.elf|optional"
-    "storsec|firmware-update/storsec.mbn|optional"
-    "devcfg|firmware-update/devcfg_overlay1.mbn|optional"
-    "devcfg|firmware-update/devcfg.mbn"
-    "vm-bootsys|firmware-update/vm-bootsys.img|optional"
-    "vbmeta_vgc|firmware-update/vbmeta_vgc.img|optional"
-    "super|firmware-update/super.img"
-)
+FLASH_ITEMS=()
+[ -f firmware-update/flash-items-full.txt ] || die "firmware-update/flash-items-full.txt not found; package is incomplete"
+while IFS= read -r item; do
+    case "$item" in
+    '' | '#'*) continue ;;
+    esac
+    FLASH_ITEMS+=("$item")
+done <firmware-update/flash-items-full.txt
 
 preflight_items "${FLASH_ITEMS[@]}"
 

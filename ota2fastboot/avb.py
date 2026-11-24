@@ -10,8 +10,9 @@ Three images are patched in place:
 
 * ``boot.img`` / ``vendor_boot.img``: the newc cpio inside the LZ4 legacy
   ramdisk frame;
-* ``vendor.img``: the EROFS file system, rewriting the compressed
-  ``/etc/fstab.qcom`` inode.
+* ``vendor.img``: the file system, rewriting the compressed EROFS inode or
+  the ext4 data blocks of ``/etc/fstab.qcom``.  Both formats are detected at
+  build time, so Android 12 (ext4) and Android 15 (EROFS) work unchanged.
 
 The patch keeps every file size unchanged.  Removed flags are replaced by
 spaces on the same line, so the cpio member size and the EROFS inode size
@@ -67,6 +68,16 @@ FSTAB_FIELDS = re.compile(
 
 _EROFS_MAGIC = 0xE0F5E1E2
 _EROFS_SUPER_OFFSET = 1024
+
+_EXT4_MAGIC = 0xEF53
+_EXT4_SUPER_OFFSET = 1024
+_EXT4_EXTENTS_FL = 0x00080000
+_EXT4_INDEX_FL = 0x00001000
+_EXT4_INCOMPAT_64BIT = 0x0080
+_EXT4_INCOMPAT_EXTENTS = 0x0040
+_EXT4_INCOMPAT_BIGALLOC = 0x0200
+_EXT4_INCOMPAT_INLINE_DATA = 0x8000
+_EXT4_EXTENT_MAGIC = 0xF30A
 
 _LAYOUT_FLAT_PLAIN = 0
 _LAYOUT_COMPRESSED_FULL = 1
@@ -377,8 +388,7 @@ def patch_ramdisk_image(path: Path, log: Log) -> dict | None:
     try:
         offset, size, page, old_pages, size_field = _ramdisk_layout(image)
     except ToolError as error:
-        log(f"  {path.name}: skipped ({error})")
-        return None
+        raise ToolError(f"{path.name}: {error}; rebuild with --keep-avb") from error
     if not size:
         log(f"  {path.name}: skipped (empty ramdisk)")
         return None
@@ -387,8 +397,7 @@ def patch_ramdisk_image(path: Path, log: Log) -> dict | None:
     try:
         blocks = _frame_blocks(frame)
     except ToolError as error:
-        log(f"  {path.name}: skipped ({error})")
-        return None
+        raise ToolError(f"{path.name}: {error}; rebuild with --keep-avb") from error
     plains = [_lz4_decompress_auto(block) for block in blocks]
     plain = bytearray(b"".join(plains))
 
@@ -814,14 +823,285 @@ class ErofsImage:
         }
 
 
+class Ext4Image:
+    """Minimal in-place accessor for an ext4 vendor image.
+
+    Only the data blocks of a regular file are rewritten.  The inode, extent
+    tree, xattrs, timestamps and checksums are left untouched, so a same-size
+    fstab replacement does not require journal or metadata updates.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.stream = path.open("r+b")
+        self.stream.seek(_EXT4_SUPER_OFFSET)
+        superblock = self.stream.read(1024)
+        if len(superblock) < 1024:
+            self.close()
+            raise ToolError("truncated ext4 superblock")
+        magic = struct.unpack_from("<H", superblock, 56)[0]
+        if magic != _EXT4_MAGIC:
+            self.close()
+            raise ToolError(f"not an ext4 image (magic 0x{magic:04x})")
+        feature_incompat = struct.unpack_from("<I", superblock, 96)[0]
+        if feature_incompat & _EXT4_INCOMPAT_BIGALLOC:
+            self.close()
+            raise ToolError("ext4 bigalloc is not supported")
+        if feature_incompat & _EXT4_INCOMPAT_INLINE_DATA:
+            self.close()
+            raise ToolError("ext4 inline_data is not supported")
+        if not feature_incompat & _EXT4_INCOMPAT_EXTENTS:
+            self.close()
+            raise ToolError("ext4 without extents is not supported")
+        self.block_size = 1024 << struct.unpack_from("<I", superblock, 24)[0]
+        self.first_data_block = struct.unpack_from("<I", superblock, 20)[0]
+        self.inodes_per_group = struct.unpack_from("<I", superblock, 40)[0]
+        self.inode_size = struct.unpack_from("<H", superblock, 88)[0] or 128
+        self.is_64bit = bool(feature_incompat & _EXT4_INCOMPAT_64BIT)
+        if self.is_64bit:
+            self.desc_size = max(
+                struct.unpack_from("<H", superblock, 254)[0], 64
+            )
+        else:
+            self.desc_size = 32
+
+    def close(self) -> None:
+        self.stream.close()
+
+    def __enter__(self) -> "Ext4Image":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
+    def _read_at(self, offset: int, size: int) -> bytes:
+        self.stream.seek(offset)
+        return self.stream.read(size)
+
+    def _write_at(self, offset: int, data: bytes) -> None:
+        self.stream.seek(offset)
+        self.stream.write(data)
+
+    def inode(self, ino: int) -> dict:
+        if ino < 1 or not self.inodes_per_group:
+            raise ToolError(f"invalid ext4 inode {ino}")
+        group = (ino - 1) // self.inodes_per_group
+        index = (ino - 1) % self.inodes_per_group
+        descriptor_offset = (
+            (self.first_data_block + 1) * self.block_size
+            + group * self.desc_size
+        )
+        descriptor = self._read_at(descriptor_offset, self.desc_size)
+        if len(descriptor) < 32:
+            raise ToolError(f"truncated ext4 group descriptor {group}")
+        table = struct.unpack_from("<I", descriptor, 8)[0]
+        if self.is_64bit and len(descriptor) >= 44:
+            table |= struct.unpack_from("<I", descriptor, 40)[0] << 32
+        location = table * self.block_size + index * self.inode_size
+        raw = self._read_at(location, self.inode_size)
+        if len(raw) < 32:
+            raise ToolError(f"truncated ext4 inode {ino}")
+        mode = struct.unpack_from("<H", raw, 0)[0]
+        size = struct.unpack_from("<I", raw, 4)[0]
+        if self.inode_size >= 112:
+            size |= struct.unpack_from("<I", raw, 108)[0] << 32
+        flags = struct.unpack_from("<I", raw, 32)[0]
+        return {
+            "ino": ino,
+            "location": location,
+            "mode": mode,
+            "size": size,
+            "flags": flags,
+        }
+
+    def _extent_tree(self, node: bytes) -> list[tuple[int, int, int, bool]]:
+        if len(node) < 12:
+            raise ToolError("truncated ext4 extent header")
+        magic = struct.unpack_from("<H", node, 0)[0]
+        if magic != _EXT4_EXTENT_MAGIC:
+            raise ToolError(f"bad ext4 extent magic 0x{magic:04x}")
+        entries = struct.unpack_from("<H", node, 2)[0]
+        depth = struct.unpack_from("<H", node, 6)[0]
+        if entries > (len(node) - 12) // 12:
+            raise ToolError("corrupt ext4 extent header")
+        result: list[tuple[int, int, int, bool]] = []
+        if depth == 0:
+            for index in range(entries):
+                base = 12 + index * 12
+                logical = struct.unpack_from("<I", node, base)[0]
+                raw_length = struct.unpack_from("<H", node, base + 4)[0]
+                start_hi = struct.unpack_from("<H", node, base + 6)[0]
+                start_lo = struct.unpack_from("<I", node, base + 8)[0]
+                physical = start_lo | (start_hi << 32)
+                unwritten = raw_length > 32768
+                length = raw_length - 32768 if unwritten else raw_length
+                if length <= 0:
+                    raise ToolError("corrupt ext4 extent length")
+                result.append((logical, length, physical, unwritten))
+            return result
+
+        for index in range(entries):
+            base = 12 + index * 12
+            leaf_lo = struct.unpack_from("<I", node, base + 4)[0]
+            leaf_hi = struct.unpack_from("<H", node, base + 8)[0]
+            leaf = self._read_at(
+                (leaf_lo | (leaf_hi << 32)) * self.block_size,
+                self.block_size,
+            )
+            result.extend(self._extent_tree(leaf))
+        return result
+
+    def extents(self, inode: dict) -> list[tuple[int, int, int, bool]]:
+        if not inode["flags"] & _EXT4_EXTENTS_FL:
+            raise ToolError(f"ext4 inode {inode['ino']} has no extent tree")
+        root = self._read_at(inode["location"] + 40, 60)
+        return self._extent_tree(root)
+
+    def read_data(self, inode: dict) -> bytes:
+        size = inode["size"]
+        data = bytearray(size)
+        for logical, length, physical, unwritten in self.extents(inode):
+            offset = logical * self.block_size
+            if offset >= size:
+                continue
+            count = min(length * self.block_size, size - offset)
+            if unwritten:
+                continue
+            data[offset : offset + count] = self._read_at(
+                physical * self.block_size, count
+            )
+        return bytes(data)
+
+    def write_data(self, inode: dict, data: bytes) -> None:
+        size = inode["size"]
+        if len(data) != size:
+            raise ToolError("ext4 fstab patch changed the file size")
+        extents = self.extents(inode)
+        covered = 0
+        for logical, length, _physical, _unwritten in sorted(extents):
+            start = logical * self.block_size
+            if start > covered:
+                raise ToolError(
+                    f"ext4 inode {inode['ino']} has a hole before offset {start}"
+                )
+            covered = max(covered, min((logical + length) * self.block_size, size))
+        if covered < size:
+            raise ToolError(
+                f"ext4 inode {inode['ino']} has a hole at offset {covered}"
+            )
+        for logical, length, physical, unwritten in extents:
+            if unwritten:
+                continue
+            offset = logical * self.block_size
+            if offset >= size:
+                continue
+            count = min(length * self.block_size, size - offset)
+            self._write_at(physical * self.block_size, data[offset : offset + count])
+
+    def list_directory(self, ino: int) -> dict[str, tuple[int, int]]:
+        inode = self.inode(ino)
+        if (inode["mode"] & 0xF000) != 0x4000:
+            raise ToolError(f"ext4 inode {ino} is not a directory")
+        data = self.read_data(inode)
+        indexed = bool(inode["flags"] & _EXT4_INDEX_FL)
+        entries: dict[str, tuple[int, int]] = {}
+        for block_index, start in enumerate(
+            range(0, len(data), self.block_size)
+        ):
+            if indexed and block_index == 0:
+                # The htree root holds the index, not directory entries.
+                continue
+            block = data[start : start + self.block_size]
+            position = 0
+            while position + 8 <= len(block):
+                entry_ino = struct.unpack_from("<I", block, position)[0]
+                record_size = struct.unpack_from("<H", block, position + 4)[0]
+                name_size = block[position + 6]
+                file_type = block[position + 7]
+                if record_size < 8 or position + record_size > len(block):
+                    break
+                if (
+                    entry_ino
+                    and name_size
+                    and position + 8 + name_size <= len(block)
+                ):
+                    name = block[
+                        position + 8 : position + 8 + name_size
+                    ].decode("utf-8", "replace")
+                    entries[name] = (entry_ino, file_type)
+                position += record_size
+        return entries
+
+    def find(self, path: str) -> int:
+        ino = 2
+        for component in [part for part in path.split("/") if part]:
+            entries = self.list_directory(ino)
+            if component not in entries:
+                raise KeyError(component)
+            ino = entries[component][0]
+        return ino
+
+
+def patch_ext4_image(path: Path, log: Log) -> dict | None:
+    """Patch the ``/etc/fstab.*`` files inside an ext4 vendor image."""
+
+    try:
+        image = Ext4Image(path)
+    except ToolError as error:
+        raise ToolError(f"{path.name}: {error}; rebuild with --keep-avb") from error
+
+    changed: list[str] = []
+    removed: list[str] = []
+    try:
+        try:
+            etc_nid = image.find("/etc")
+        except KeyError:
+            log(f"  {path.name}: no /etc directory")
+            return None
+        entries = image.list_directory(etc_nid)
+        for name, (nid, _file_type) in sorted(entries.items()):
+            if not name.startswith("fstab."):
+                continue
+            inode = image.inode(nid)
+            if (inode["mode"] & 0xF000) != 0x8000:
+                continue
+            data = image.read_data(inode)
+            patched, flags = strip_fstab_flags(data)
+            if not flags:
+                continue
+            image.write_data(inode, patched)
+            _, remaining = strip_fstab_flags(image.read_data(inode))
+            if remaining:
+                raise ToolError(
+                    f"{path.name}: /etc/{name} still has removable flags"
+                )
+            changed.append(f"/etc/{name}")
+            removed.extend(flags)
+        if not changed:
+            log(f"  {path.name}: no fstab flags to remove")
+            return None
+    finally:
+        image.close()
+
+    log(
+        f"  {path.name}: {', '.join(changed)} "
+        f"({len(removed)} flags removed)"
+    )
+    return {
+        "file": path.name,
+        "entries": changed,
+        "flags": removed,
+        "fs": "ext4",
+    }
+
+
 def patch_erofs_image(path: Path, log: Log) -> dict | None:
     """Patch the ``/etc/fstab.*`` files inside an EROFS vendor image."""
 
     try:
         image = ErofsImage(path)
     except ToolError as error:
-        log(f"  {path.name}: skipped ({error})")
-        return None
+        raise ToolError(f"{path.name}: {error}; rebuild with --keep-avb") from error
 
     changed: list[str] = []
     removed: list[str] = []
@@ -857,7 +1137,24 @@ def patch_erofs_image(path: Path, log: Log) -> dict | None:
         "file": path.name,
         "entries": changed,
         "flags": removed,
+        "fs": "erofs",
     }
+
+
+def _vendor_filesystem(path: Path) -> str | None:
+    """Return ``ext4`` or ``erofs`` by magic, or ``None`` when unsupported."""
+
+    with path.open("rb") as stream:
+        head = stream.read(2048)
+    if len(head) >= _EXT4_SUPER_OFFSET + 58:
+        magic = struct.unpack_from("<H", head, _EXT4_SUPER_OFFSET + 56)[0]
+        if magic == _EXT4_MAGIC:
+            return "ext4"
+    if len(head) >= _EROFS_SUPER_OFFSET + 4:
+        magic = struct.unpack_from("<I", head, _EROFS_SUPER_OFFSET)[0]
+        if magic == _EROFS_MAGIC:
+            return "erofs"
+    return None
 
 
 def patch_images(
@@ -882,7 +1179,16 @@ def patch_images(
             log("  vendor.img: not present")
             report["vendor"] = None
         else:
-            report["vendor"] = patch_erofs_image(vendor, log)
+            filesystem = _vendor_filesystem(vendor)
+            if filesystem == "ext4":
+                report["vendor"] = patch_ext4_image(vendor, log)
+            elif filesystem == "erofs":
+                report["vendor"] = patch_erofs_image(vendor, log)
+            else:
+                raise ToolError(
+                    f"{vendor.name}: unsupported file system for fstab "
+                    "patching; rebuild with --keep-avb"
+                )
     else:
         log("  vendor.img: skipped (--no-super)")
         report["vendor"] = None

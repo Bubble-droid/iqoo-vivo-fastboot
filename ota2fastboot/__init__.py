@@ -27,6 +27,9 @@ The input is an *extracted* full OTA directory (the one that contains
     <out>/firmware-update/
         boot.img vendor_boot.img dtbo.img recovery.img ...
         super.img                  # rebuilt with lpmake, sparse
+        flash-items-full.txt       # partitions written by flash-full
+        flash-items-safe.txt       # partitions written by flash
+        flash-items-modem.txt      # optional modem group for flash
         oem/OEM_<NAME>.img         # selected OEM variant (all with --all-oem)
         oem/vbmeta_oem_<NAME>.img
         vbmeta.img vbmeta_system.img vbmeta_vgc.img
@@ -36,14 +39,12 @@ The input is an *extracted* full OTA directory (the one that contains
 What the converter does:
 
 1. validates the OTA (block-based full package, device, stream files);
-2. optionally probes an ADB-connected target device for its properties,
-   OEM/VGC identity and dynamic partitions; if ADB cannot read the exact
-   ``super`` size, the phone is rebooted to the bootloader, the remaining
-   variables are read there, and the phone is rebooted back to Android.  The
-   probe never writes to the phone, and its result can select the OEM/VGC
-   variants and size ``super.img`` to the actual hardware; an explicit
-   ``--device-size`` skips the bootloader pass.  The serial is masked in the
-   reports and log unless ``--keep-serial`` is used;
+2. does not touch a connected phone by default; with ``--probe-device`` it
+   reads the ADB properties, OEM/VGC identity, devcfg type and dynamic
+   partitions, then uses the bootloader only when ADB cannot read the exact
+   ``super`` size.  The probe never writes to the phone; an explicit
+   ``--device-size`` keeps the build reproducible.  The serial is masked in
+   the reports and log unless ``--keep-serial`` is used;
 3. rebuilds every dynamic partition from its transfer list, including split
    ``.new.dat`` streams and single-file Brotli ``.new.dat.br`` streams;
 4. rebuilds ``vm-bootsys`` (block image that lives outside ``super``) when the
@@ -51,19 +52,22 @@ What the converter does:
 5. extracts the OEM variant placed in ``super`` so the package repair script can
    restore the identity; ``--all-oem`` packages every variant from the OTA;
 6. copies the physical images referenced by the full flash script (boot chain,
-   modem, xbl, ...), using the OTA filenames as the fallback list;
+   modem, xbl, ...), adding partitions that only exist in newer OTAs from the
+   updater script, and chooses the OTA's devcfg variant;
 7. verifies the original images: ``e2fsck`` on every ext4 image, ``lpdump`` on
    the generated super metadata, and ``avbtool verify_image
    --follow_chain_partitions`` for ``vbmeta``, ``vbmeta_system``,
    ``vbmeta_oem`` and ``vbmeta_vgc``;
 8. removes the AVB, dm-verity and force-encryption flags from the fstab inside
-   ``boot``, ``vendor_boot`` and ``vendor`` (skip with ``--keep-avb``), then
-   builds a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
+   ``boot``, ``vendor_boot`` and ``vendor`` (skip with ``--keep-avb``).  The
+   vendor image may be ext4 or EROFS; both are patched in place.  Then builds
+   a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
    including the selected ``oem`` and ``vgc`` variants;
-9. writes the package README, a SHA-256 manifest, a build report and the
-   platform-specific scripts from ``scripts/bash`` or ``scripts/windows``;
-   with ``--target-platform windows`` and ``--platform-tools-dir DIR`` the
-   Windows adb/fastboot tools are bundled under ``platform-tools/``.
+9. writes the package README, the generated flash-item lists, a SHA-256
+   manifest, a build report and the platform-specific scripts from
+   ``scripts/bash`` or ``scripts/windows``; with ``--target-platform windows``
+   and ``--platform-tools-dir DIR`` the Windows adb/fastboot tools are bundled
+   under ``platform-tools/``.
 
 Nothing is flashed.  The output directory is left ready for ``./flash.sh`` /
 ``./flash-full.sh`` on Linux and macOS, or ``.\\flash.cmd`` /

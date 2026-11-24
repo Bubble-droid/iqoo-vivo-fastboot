@@ -24,7 +24,8 @@ def make_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "OEM variant to place in super (NAME, auto, none); "
-            "auto prefers the identity reported by the ADB device"
+            "auto uses the identity reported by --probe-device when present, "
+            "otherwise a matching FULL_SC variant from the OTA"
         ),
     )
     parser.add_argument(
@@ -32,7 +33,8 @@ def make_parser() -> argparse.ArgumentParser:
         default="auto",
         help=(
             "VGC variant to place in super (NAME, auto, none); "
-            "auto prefers the identity reported by the ADB device"
+            "auto uses the identity reported by --probe-device when present, "
+            "otherwise V000 from the OTA"
         ),
     )
     parser.add_argument(
@@ -40,8 +42,18 @@ def make_parser() -> argparse.ArgumentParser:
         type=parse_size,
         help=(
             "physical super partition size in bytes "
-            f"(default: size read from the ADB device or its bootloader, "
-            f"otherwise {DEFAULT_DEVICE_SIZE} for iQOO 9 / 9 Pro)"
+            f"(default: {DEFAULT_DEVICE_SIZE}, the iQOO 9 / 9 Pro size; "
+            "--probe-device uses the connected phone instead)"
+        ),
+    )
+    parser.add_argument(
+        "--devcfg-type",
+        choices=("auto", "0", "1"),
+        default="auto",
+        help=(
+            "devcfg image to package: 0 for devcfg.mbn, 1 for "
+            "devcfg_overlay1.mbn; auto reads ro.vivo.boot.devcfg_type with "
+            "--probe-device, otherwise 0"
         ),
     )
     parser.add_argument(
@@ -88,25 +100,34 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--serial",
         help=(
-            "serial of the ADB device to probe "
+            "serial of the ADB device to probe with --probe-device "
             "(default: first connected ADB device)"
         ),
     )
     device_group = parser.add_mutually_exclusive_group()
     device_group.add_argument(
+        "--probe-device",
+        action="store_true",
+        help=(
+            "read the connected phone over ADB/bootloader and use its super "
+            "size, OEM/VGC identity and devcfg type; disabled by default so "
+            "the same OTA always produces the same package"
+        ),
+    )
+    device_group.add_argument(
         "--no-device",
         action="store_true",
-        help="do not probe a connected device",
+        help=argparse.SUPPRESS,
     )
     device_group.add_argument(
         "--require-device",
         action="store_true",
-        help="fail when no compatible ADB device is connected",
+        help="probe the connected phone and fail when it is absent or mismatched",
     )
     parser.add_argument(
         "--skip-device-check",
         action="store_true",
-        help="use a connected device even when it does not match the OTA",
+        help="with --probe-device, use the phone even when it does not match the OTA",
     )
     parser.add_argument("--no-super", action="store_true", help="skip super.img")
     parser.add_argument(
