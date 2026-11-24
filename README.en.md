@@ -2,7 +2,7 @@
 
 [中文](README.md) | **English**
 
-`ota2fastboot.py` converts an **extracted** vivo / iQOO full OTA (block mode) into a self-contained fastboot package. The package ships platform-native flash scripts: bash for Linux / macOS, and PowerShell with `.cmd` launchers for Windows. The default entry point is the safe `./flash.sh` (Windows: `.\flash.cmd`); use `./flash-full.sh` (Windows: `.\flash-full.cmd`) for a full flash. It rebuilds every dynamic partition, creates a sparse `super.img` with `lpmake`, extracts the selected OEM variant, copies the physical images required by the flash scripts, and verifies the result with `e2fsck`, `lpdump`, `avbtool` and SHA-256 manifests.
+`ota2fastboot.py` converts an **extracted vivo / iQOO full OTA** (block OTA) into a self-contained fastboot package. The package ships platform-native flash scripts: bash for Linux / macOS and PowerShell with `.cmd` launchers for Windows. The default entry point is the safe `./flash.sh` (Windows: `.\flash.cmd`); use `./flash-full.sh` (Windows: `.\flash-full.cmd`) for a full flash.
 
 > **Disclaimer**
 >
@@ -10,13 +10,91 @@
 
 ---
 
+## Scope
+
+### Supported OTA packages
+
+Only **official full OTAs** are supported, and they must be an extracted directory — not a zip, not an incremental package, not a `payload.bin`.
+
+| Item | Requirement |
+| --- | --- |
+| Package type | Official full OTA, not incremental / differential |
+| OTA type | `ota-type=BLOCK` in `META-INF/com/android/metadata`; `package-type` is normally `dota` |
+| Partition layout | **A-only / single slot**; no `_a` / `_b` suffixes |
+| Dynamic partition data | `*.transfer.list` (version 4) plus a complete `*.new.dat`, split `*.new.dat.1..N`, or Brotli `*.new.dat.br` |
+| Physical images | `.img`, `.mbn`, `.elf`, `.bin` under `firmware-update/`, copied as-is |
+| Variant directories | Optional `oem/` and `vgc/`, each with `dynamic_partitions_op_list_<variant>` |
+| Required metadata | `post-version` (output directory name), `pre-device`, `post-build` |
+
+The input directory must contain at least:
+
+```text
+META-INF/com/android/metadata
+META-INF/com/google/android/updater-script
+dynamic_partitions_op_list
+*.transfer.list
+*.new.dat  or  *.new.dat.N  or  *.new.dat.br
+firmware-update/
+oem/        # optional, OEM variants
+vgc/        # optional, VGC variants
+```
+
+If you have a zip:
+
+```bash
+unzip -q <full-ota>.zip -d <full-ota>
+```
+
+**Quick compatibility check:**
+
+1. The extracted directory has `dynamic_partitions_op_list`, `*.transfer.list` and `*.new.dat*`;
+2. `metadata` says `ota-type=BLOCK`;
+3. `firmware-update/` and `updater-script` are present;
+4. Dynamic partition names have no `_a` / `_b` suffix;
+5. Firmware uses Qualcomm names such as `xbl`, `abl`, `tz`, `hyp`, `devcfg`.
+
+All five must hold before the package is a good fit for this tool.
+
+### Image packaging and output format
+
+- Dynamic partitions come from an Android block OTA as transfer-list + `new.dat` streams; the tool reconstructs raw partition images (ext4 or EROFS, as shipped by the vendor).
+- Every dynamic partition plus the selected `oem/` and `vgc/` variants is merged by `lpmake` into one **sparse `super.img`**, sized to the target device's `super` partition.
+- `boot`, `vendor_boot`, `dtbo`, `recovery`, `vm-bootsys` and similar images stay raw; by default only the fstab inside the existing LZ4 ramdisk frame is rewritten in place, without rebuilding the cpio.
+- `vbmeta*` and bootloader / modem / UFS firmware are copied as-is; nothing is re-signed or repacked.
+- The output also contains flash scripts, `package.env`, a SHA-256 manifest, a build report and the flash-item lists.
+
+### Supported models and CPUs
+
+| Item | Status |
+| --- | --- |
+| Tested model | iQOO 9 Pro (PD2171 family), with one Android 12 and one Android 15 full OTA; the same-generation iQOO 9 shares the layout but was not tested separately |
+| CPU platform | Qualcomm Snapdragon 8 Gen 1 (SM8450) |
+| Design scope | vivo / iQOO Qualcomm devices, A-only, block OTA, vivo dynamic partition layout |
+| Other Snapdragon models | Untested. May work when the OTA layout, partition names and firmware mapping match, but booting is not guaranteed |
+| Other Android versions | Untested. The code adapts to boot v3/v4, vendor_boot v3/v4, LZ4 and ext4 / EROFS, but only A12 / A15 were verified |
+| Not supported | MediaTek (MTK), Samsung Exynos, Google Tensor; A/B or Virtual A/B devices; generic `payload.bin` OTAs |
+
+### Missing capabilities
+
+- **It does not flash, unlock or recover a brick.** The tool only builds and verifies a fastboot package; unlocking the bootloader, entering Fastboot and EDL recovery are up to you.
+- **No incremental / differential OTAs.** A full package is required.
+- **No `payload.bin` or whole-package `.bin` support.** Only extracted transfer-list + `new.dat` directories are accepted.
+- **No A/B or Virtual A/B support.** There is no slot suffix, dual-slot `super` or `boot_a` / `boot_b` handling.
+- **No MediaTek support.** The firmware map, `devcfg` handling and partition names are Qualcomm-specific.
+- **It does not determine the `super` size automatically.** The default is 14 GiB (iQOO 9 / 9 Pro); other devices need an explicit `--device-size` or `--probe-device`.
+- **Booting is not guaranteed across models or versions.** OEM / VGC identity, bootloader and anti-rollback state may differ between batches.
+- **Anti-rollback is not bypassed.** A bootloader downgrade may be refused.
+- **Data is not wiped automatically.** The flash scripts ask before rebooting and keep data by default; wiping removes all apps and files.
+- **The build host is verified on Linux only.** macOS is untested; Windows is a flash-side target with no build workflow.
+- **No post-flash system integrity check.** With AVB / dm-verity removed by default, system verification no longer applies.
+
 ## Features
 
 - Rebuilds every dynamic partition: `system`, `vendor`, `product`, `system_ext`, `odm`, `vendor_dlkm`
-- Supports split `*.new.dat`, `*.new.dat.1..N` and single-file Brotli `*.new.dat.br` streams
+- Supports a complete `*.new.dat`, split `*.new.dat.1..N` and Brotli `*.new.dat.br` streams
 - Rebuilds block images outside `super`, such as `vm-bootsys` (when the OTA provides them)
 - Builds a sparse `super.img` with `lpmake` sized to the device `super` partition
-- Does not touch a connected phone by default; `--probe-device` uses its real `super` size, OEM/VGC identity, devcfg type and model check to make the package fit the hardware; when ADB cannot read the `super` size, the bootloader is queried automatically
+- Does not touch a connected phone by default; `--probe-device` reads the real `super` size, OEM/VGC identity, devcfg type and model; when ADB cannot read the `super` size, the bootloader is queried automatically
 - Adapts to both Android 12 and Android 15 firmware forms: boot v3/v4, vendor_boot v3/v4, LZ4 ramdisks, ext4 or EROFS vendor, different physical partition sets and OEM/VGC variant counts
 - Adds physical partitions that only exist in newer OTAs (such as A15 `qweslicstore` and `rtice`) from `updater-script`, and generates the flash-item lists the scripts consume
 - Packages and flashes only the `devcfg` image matching `ro.vivo.boot.devcfg_type` (`--devcfg-type` overrides)
@@ -33,17 +111,19 @@
 
 ## Requirements
 
+### Build host
+
 | Tool | Purpose |
 | --- | --- |
+| Linux x86_64 | Build host; only Linux is verified, macOS / Windows builds are untested |
 | `python3` 3.8+ | Run the converter |
 | `brotli` | Decompress `*.new.dat.br` |
 | `lpmake` / `lpdump` | Build and inspect `super.img` |
 | `e2fsck` | Check ext4 partition images |
-| `avbtool` | Verify AVB signatures and chained partitions |
-| `liblz4` | Recompress the ramdisk and EROFS fstab when AVB is removed (default) |
+| `avbtool` | Verify AVB signatures and chained partitions; `--skip-avb` skips it |
+| `liblz4` | Recompress the ramdisk and EROFS fstab when AVB is removed (default); `--keep-avb` skips it |
 | `adb` / `fastboot` | Only used for `--probe-device` / `--require-device`; also used to flash the package |
-| `bash` | Flash scripts in Linux / macOS packages |
-| PowerShell 5.1+ | Flash scripts in Windows packages; included with Windows 10/11 |
+| ~25 GiB free disk | Peak usage is roughly dynamic partition total × 2 + firmware size × 2 |
 
 Debian / Ubuntu:
 
@@ -53,26 +133,14 @@ sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs liblz4-1
 
 `avbtool` comes from AOSP `external/avb`; some distributions require you to add it to `PATH` yourself.
 
-## Preparing the OTA
+### Flash host
 
-The input must be an **extracted directory** containing at least:
+| Platform | Requirement |
+| --- | --- |
+| Linux / macOS | `bash`, Android platform-tools (`adb` / `fastboot`), USB connection |
+| Windows | PowerShell 5.1+ (included with Windows 10/11), Android platform-tools, USB connection |
 
-```text
-META-INF/com/android/metadata
-META-INF/com/google/android/updater-script
-dynamic_partitions_op_list
-*.transfer.list
-*.new.dat  or  *.new.dat.N  or  *.new.dat.br
-oem/        # optional, OEM variants
-vgc/        # optional, VGC variants
-firmware-update/
-```
-
-If you have a zip:
-
-```bash
-unzip -q <full-ota>.zip -d <full-ota>
-```
+Packages follow the build host by default; add `--target-platform windows` when preparing a package for Windows users.
 
 ## Quick start
 
@@ -85,20 +153,13 @@ cd <repo>
 
 The package is written to `out/<OTA name>-fastboot/` by default, where `<OTA name>` comes from the OTA metadata field `post-version`, not the source directory name. For example, `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` maps to `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`.
 
-By default the converter does **not** read a connected phone, so the same OTA
-and flags always produce the same `super.img`. Pass `--probe-device` to read
-the `super` size, OEM/VGC identity or devcfg type from the current phone:
+By default the converter does **not** read a connected phone, so the same OTA and flags always produce the same `super.img`. Pass `--probe-device` to read the `super` size, OEM/VGC identity or devcfg type from the current phone:
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --probe-device
 ```
 
-The probe accepts **ADB connections only** (USB debugging enabled). When ADB
-cannot read the exact `super` size, the phone is automatically rebooted to the
-bootloader, the remaining data is read with `fastboot getvar`, and the phone is
-rebooted back to Android. The probe never writes, flashes or unlocks anything.
-Use `--serial` when more than one device is connected. Release packages should
-pin `--device-size` instead of relying on a probe.
+The probe accepts **ADB connections only** (USB debugging enabled). When ADB cannot read the exact `super` size, the phone is automatically rebooted to the bootloader, the remaining data is read with `fastboot getvar`, and the phone is rebooted back to Android. The probe never writes, flashes or unlocks anything. Use `--serial` when more than one device is connected. Release packages should pin `--device-size` instead of relying on a probe.
 
 To validate and print the plan without writing images:
 
@@ -106,7 +167,7 @@ To validate and print the plan without writing images:
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
 ```
 
-After the build, run the scripts that match the package target.
+After the build, flash with the scripts that match the package target.
 
 Linux / macOS package (the default, follows the build host):
 
@@ -129,13 +190,9 @@ cd out\<OTA name>-fastboot
 .\flash-full.cmd  # full flash, bootloader and UFS firmware included
 ```
 
-The `.cmd` launchers invoke the matching `.ps1` with
-`-ExecutionPolicy Bypass`, so no system policy change is needed.
+The `.cmd` launchers invoke the matching `.ps1` with `-ExecutionPolicy Bypass`, so no system policy change is needed.
 
-After every partition is written and before the automatic reboot, the scripts
-ask whether to erase data (default: keep). Only `userdata`, `metadata`,
-`cache` and `frp` are cleared; the system partitions just written are left
-intact.
+After every partition is written and before the automatic reboot, the scripts ask whether to erase data (default: keep). Only `userdata`, `metadata`, `cache` and `frp` are cleared; the system partitions just written are left intact.
 
 ## Output layout
 
@@ -193,9 +250,7 @@ out/<OTA name>-fastboot/
         └── vbmeta_oem_<selected variant>.img
 ```
 
-`manifest.sha256` covers every file except `meta/build.log` and the manifest
-files themselves. `device-info.txt` is written into the package when flashing
-and records the pre-flash model, OEM, Android version and package version.
+`manifest.sha256` covers every file except `meta/build.log` and the manifest files themselves. `device-info.txt` is written into the package when flashing and records the pre-flash model, OEM, Android version and package version.
 
 ## Flash scripts
 
@@ -207,14 +262,9 @@ and records the pre-flash model, OEM, Android version and package version.
 | Verify the package | `verify.sh` | `verify.ps1` or `verify.cmd` |
 | Old-name alias | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
 
-The safe flash writes `boot`, `dtbo`, `vendor_boot`, `recovery`, `vm-bootsys`,
-`vbmeta*`, `super` and repairs the OEM identity. Fastboot remains reachable,
-so an older package can be flashed back if it fails. The full flash also writes
-`xbl`, `abl`, `tz`, `hyp`, `storage` and the rest of the bootloader chain; an
-interrupted bootloader write may be unrecoverable without EDL.
+The safe flash writes `boot`, `dtbo`, `vendor_boot`, `recovery`, `vm-bootsys`, `vbmeta*`, `super` and repairs the OEM identity. Fastboot remains reachable, so an older package can be flashed back if it fails. The full flash also writes `xbl`, `abl`, `tz`, `hyp`, `storage` and the rest of the bootloader chain; an interrupted bootloader write may be unrecoverable without EDL.
 
-`flash-safe.sh` / `flash-safe.cmd` is the old name and remains as a
-compatibility alias.
+`flash-safe.sh` / `flash-safe.cmd` is the old name and remains as a compatibility alias.
 
 The modem group is skipped by default. To include it:
 
@@ -243,46 +293,23 @@ OEM repair:
 .\fix-oem.cmd --filter CT-BMW
 ```
 
-By default only the OEM variant used in `super` is packaged. Add `--all-oem`
-at build time to keep every variant.
+By default only the OEM variant used in `super` is packaged. Add `--all-oem` at build time to keep every variant.
 
 ## AVB, dm-verity and force-encryption
 
 Generated packages disable verification and force-encryption by default:
 
-- The `fstab.qcom` inside the `boot.img` and `vendor_boot.img` ramdisks and
-  `/etc/fstab.qcom` inside `vendor.img` are rewritten.  The vendor image may be
-  ext4 or EROFS; both Android 12 and Android 15 layouts are detected
-  automatically.
-- Flags such as `avb=...`, `avb_keys=...`, `avb`, `verify`, `vverify`,
-  `fileencryption=...`, `keydirectory=...`, `metadata_encryption=...`,
-  `keepverity` and `keepforceencrypt` are removed.
-- `vbmeta`, `vbmeta_system`, `vbmeta_oem` and `vbmeta_vgc` are flashed with
-  `--disable-verity --disable-verification`.
+- The `fstab.qcom` inside the `boot.img` and `vendor_boot.img` ramdisks and `/etc/fstab.qcom` inside `vendor.img` are rewritten. The vendor image may be ext4 or EROFS; both Android 12 and Android 15 layouts are detected automatically.
+- Flags such as `avb=...`, `avb_keys=...`, `avb`, `verify`, `vverify`, `fileencryption=...`, `keydirectory=...`, `metadata_encryption=...`, `keepverity` and `keepforceencrypt` are removed.
+- `vbmeta`, `vbmeta_system`, `vbmeta_oem` and `vbmeta_vgc` are flashed with `--disable-verity --disable-verification`.
 
-The patch keeps every file size unchanged by padding the removed flags with
-spaces, so no cpio archive has to be rebuilt and no ext4 inode or EROFS
-metadata changes.  The AVB chain is verified on the original OTA images before
-the patch runs.  A signed boot v4 ramdisk may grow as long as it stays within
-its original page count.
+The patch keeps every file size unchanged by padding the removed flags with spaces, so no cpio archive has to be rebuilt and no ext4 inode or EROFS metadata changes. The AVB chain is verified on the original OTA images before the patch runs. A signed boot v4 ramdisk may grow as long as it stays within its original page count.
 
-Pass `--keep-avb` at build time to keep the stock verification and encryption
-settings. The generated `package.env` records the final state in
-`AVB_STRIPPED`; the flash scripts use it to decide whether to add the disable
-flags.
+Pass `--keep-avb` at build time to keep the stock verification and encryption settings. The generated `package.env` records the final state in `AVB_STRIPPED`; the flash scripts use it to decide whether to add the disable flags.
 
-With these flags `fastboot` rewrites the `vbmeta*` image in place, so running
-`verify.sh` again after flashing reports those files as changed. That is normal
-fastboot behaviour, not corruption.
+With these flags `fastboot` rewrites the `vbmeta*` image in place, so running `verify.sh` again after flashing reports those files as changed. That is normal fastboot behaviour, not corruption.
 
-Removing force-encryption can make an already encrypted `userdata` partition
-unbootable until it is cleared. After all writes and before the automatic
-reboot, the flash scripts ask whether to erase data (default: keep). When
-confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and
-`metadata`, then erase `frp`; older platform-tools fall back to traditional
-`fastboot erase userdata` calls. Only data partitions are touched, so the
-freshly written system, boot, vendor, super, modem and OEM partitions stay
-intact.
+Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and `metadata`, then erase `frp`; older platform-tools fall back to traditional `fastboot erase userdata` calls. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
 
 ## Common options
 
@@ -342,10 +369,7 @@ Examples:
 
 ## Probing an ADB device (optional)
 
-No probe happens by default. Add `--probe-device` or `--require-device` to
-read the connected phone. The converter accepts **ADB connections only**. A
-phone that is visible only in Fastboot is not probed; boot Android and enable
-USB debugging first. The probe never writes, flashes or unlocks anything.
+No probe happens by default. Add `--probe-device` or `--require-device` to read the connected phone. The converter accepts **ADB connections only**. A phone that is visible only in Fastboot is not probed; boot Android and enable USB debugging first. The probe never writes, flashes or unlocks anything.
 
 | Stage | Read | Used for |
 | --- | --- | --- |
@@ -364,7 +388,7 @@ USB debugging first. The probe never writes, flashes or unlocks anything.
 - Rebooting to the bootloader and back takes some time; keep the USB cable connected.
 - For reproducible release packages, do **not** pass `--probe-device`; pin `--device-size` instead.
 
-## Verification
+## Build verification
 
 1. `e2fsck -fn` on every ext4 image, including `oem` and `vgc`
 2. `lpdump` to confirm that every dynamic partition exists in `super.img` and is not smaller than the op list declares
@@ -374,8 +398,7 @@ USB debugging first. The probe never writes, flashes or unlocks anything.
    - `vbmeta_oem`
    - `vbmeta_vgc`
 
-   With the default AVB removal this runs on the original OTA images before
-   the patch; the patched images are not AVB-verified.
+   With the default AVB removal this runs on the original OTA images before the patch; the patched images are not AVB-verified.
 4. Flash-item lists: every required image in the generated `firmware-update/flash-items-*.txt` exists
 5. The sparse image expands to exactly the requested `super` size (`--device-size`, the device probe value, or the default)
 6. The SHA-256 manifest can be verified:
@@ -388,8 +411,7 @@ USB debugging first. The probe never writes, flashes or unlocks anything.
 .\verify.cmd
 ```
 
-The manifest covers every file except `meta/build.log` and the manifest files
-themselves.
+The manifest covers every file except `meta/build.log` and the manifest files themselves.
 
 ## Model check
 
@@ -424,6 +446,10 @@ $env:SKIP_MODEL_CHECK = "1"
 **`lpmake not found`**: install `android-sdk-libsparse-utils`.
 
 **Not enough disk space**: peak usage is roughly dynamic partition total × 2 + firmware size × 2. A large package needs about 25 GiB free.
+
+**`dynamic_partitions_op_list not found`**: the input is not a fully extracted directory, or it is not a block OTA. Extract the official full package again.
+
+**`unsupported ota-type`**: `metadata` is not `BLOCK`, for example a `payload.bin` A/B OTA; this tool does not support it.
 
 **Stuck at the boot logo after flashing**: flash the older package back with `./flash.sh` (on Windows, `.\flash.cmd`), or check whether the bootloader must be updated together.
 

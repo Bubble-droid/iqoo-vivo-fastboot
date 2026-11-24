@@ -2,7 +2,7 @@
 
 **中文** | [English](README.en.md)
 
-`ota2fastboot.py` 把一个 **已解包** 的 vivo / iQOO 全量卡刷包（block OTA）转换成一个完整的 Fastboot 线刷包。输出包自带刷机脚本：Linux / macOS 为 bash，Windows 为原生 PowerShell（附 `.cmd` 启动器）。默认入口是安全线刷 `./flash.sh`（Windows 为 `.\flash.cmd`），完整线刷用 `./flash-full.sh`（Windows 为 `.\flash-full.cmd`）。
+`ota2fastboot.py` 把一个 **已解包的 vivo / iQOO 全量卡刷包**（block OTA）转换成完整的 Fastboot 线刷包。输出包自带平台原生刷机脚本：Linux / macOS 用 bash，Windows 用 PowerShell（附 `.cmd` 启动器）。默认入口是安全线刷 `./flash.sh`（Windows 为 `.\flash.cmd`），完整线刷用 `./flash-full.sh`（Windows 为 `.\flash-full.cmd`）。
 
 > **免责声明**
 >
@@ -10,19 +10,97 @@
 
 ---
 
+## 适用范围
+
+### 支持的卡刷包
+
+只支持 **官方完整（全量）卡刷包**，且必须是解包后的目录，不是 zip、不是增量包、不是 `payload.bin`。
+
+| 项目 | 要求 |
+| --- | --- |
+| 包类型 | 官方完整卡刷包（full OTA），非增量 / 差异包 |
+| OTA 类型 | `META-INF/com/android/metadata` 中 `ota-type=BLOCK`；`package-type` 通常为 `dota` |
+| 分区布局 | **A-only / 单槽**，分区名不带 `_a` / `_b` 后缀 |
+| 动态分区数据 | `*.transfer.list`（版本 4）+ 完整 `*.new.dat`、分段 `*.new.dat.1..N` 或 Brotli `*.new.dat.br` |
+| 物理镜像 | `firmware-update/` 下的 `.img`、`.mbn`、`.elf`、`.bin`，按原文件名和内容复制 |
+| 变体目录 | `oem/`、`vgc/` 可选，各自带 `dynamic_partitions_op_list_<变体名>` |
+| 必需元数据 | `post-version`（输出目录名）、`pre-device`、`post-build` |
+
+输入目录至少应包含：
+
+```text
+META-INF/com/android/metadata
+META-INF/com/google/android/updater-script
+dynamic_partitions_op_list
+*.transfer.list
+*.new.dat  或  *.new.dat.N  或  *.new.dat.br
+firmware-update/
+oem/        # 可选，OEM 制式
+vgc/        # 可选，VGC 变体
+```
+
+如果拿到的是 zip：
+
+```bash
+unzip -q <full-ota>.zip -d <full-ota>
+```
+
+**快速判断能否转换：**
+
+1. 解包目录里有 `dynamic_partitions_op_list`、`*.transfer.list`、`*.new.dat*`；
+2. `metadata` 中 `ota-type=BLOCK`；
+3. 有 `firmware-update/` 和 `updater-script`；
+4. 动态分区名不带 `_a` / `_b`；
+5. 固件是 `xbl`、`abl`、`tz`、`hyp`、`devcfg` 这类高通命名。
+
+五项都满足才适合使用本工具。
+
+### 镜像打包方式与输出格式
+
+- 输入动态分区采用 Android block OTA 的 transfer list + `new.dat` 数据流，工具按块还原为 raw 分区镜像（ext4 或 EROFS，取决于原厂）。
+- 所有动态分区加上 `oem/`、`vgc/` 选中的变体，由 `lpmake` 合并成一个 **稀疏 `super.img`**，大小等于目标设备的 `super` 分区。
+- `boot`、`vendor_boot`、`dtbo`、`recovery`、`vm-bootsys` 等保持 raw 镜像；默认只在原 LZ4 ramdisk 帧内原地改写 fstab，不重建 cpio。
+- `vbmeta*` 与 bootloader / modem / UFS 固件按原文件复制，不重新签名、不重新打包。
+- 输出包同时包含刷机脚本、`package.env`、SHA-256 清单、构建报告和刷机镜像清单。
+
+### 支持的机型和 CPU
+
+| 项目 | 情况 |
+| --- | --- |
+| 实测机型 | iQOO 9 Pro（PD2171 系列），Android 12 与 Android 15 各一份全量包；同代 iQOO 9 共用布局，未单独实测 |
+| CPU 平台 | 高通骁龙 8 Gen 1（SM8450） |
+| 设计范围 | vivo / iQOO 高通平台、A-only、block OTA、vivo 动态分区布局 |
+| 其他骁龙机型 | 未实测。OTA 结构、分区名与固件映射一致时可以尝试，但不保证可开机 |
+| 其他 Android 版本 | 未实测。代码自适应 boot v3/v4、vendor_boot v3/v4、LZ4、ext4 / EROFS，但仅 A12 / A15 验证过 |
+| 不支持 | 联发科（MTK）、三星 Exynos、Google Tensor；A/B 或 Virtual A/B 机型；`payload.bin` 通用 OTA |
+
+### 欠缺的能力
+
+- **不刷机、不解锁、不救砖。** 工具只生成并校验线刷包；解锁 Bootloader、进入 Fastboot、EDL 恢复都要自行处理。
+- **不处理增量包 / 差异包。** 必须是完整全量包。
+- **不支持 `payload.bin` 和整包 `.bin` 格式。** 只认 transfer list + `new.dat` 的解包目录。
+- **不支持 A/B、Virtual A/B。** 没有槽位后缀、`super` 双槽或 `boot_a` / `boot_b` 的处理逻辑。
+- **不支持联发科。** 固件映射、`devcfg` 与分区命名都按高通平台编写。
+- **不自动确定 `super` 大小。** 默认 14 GiB（iQOO 9 / 9 Pro）；其他机型需显式 `--device-size`，或用 `--probe-device` 读取手机。
+- **不保证跨机型、跨版本可开机。** 不同批次的 OEM / VGC 身份、bootloader 与 anti-rollback 状态都可能不同。
+- **不规避 anti-rollback。** 跨版本降级可能被 bootloader 拒绝。
+- **不自动清空数据。** 刷机脚本只在重启前询问，默认保留；清空会丢失全部应用和文件。
+- **构建端只在 Linux 上验证。** macOS 未验证；Windows 只作为刷机端，不提供构建流程。
+- **不校验刷入后的系统完整性。** 默认移除 AVB / dm-verity 后，系统校验不再生效。
+
 ## 功能
 
 - 重建全部动态分区：`system`、`vendor`、`product`、`system_ext`、`odm`、`vendor_dlkm`
-- 支持分段 `*.new.dat`、`*.new.dat.1..N`、单文件 Brotli `*.new.dat.br`
+- 支持完整 `*.new.dat`、分段 `*.new.dat.1..N` 与 Brotli `*.new.dat.br`
 - 重建 `vm-bootsys` 等 `super` 之外的块镜像（OTA 提供时）
 - 用 `lpmake` 生成与设备 `super` 分区同尺寸的稀疏 `super.img`
-- 构建时默认不读取设备；需要时加 `--probe-device`，用实际 `super` 大小、OEM/VGC 身份、`devcfg` 类型和机型校验结果生成更契合的包；ADB 读不到的 `super` 大小会自动进 bootloader 读取
+- 构建时默认不读取设备；`--probe-device` 可读取实际 `super` 大小、OEM/VGC 身份、`devcfg` 类型和机型；ADB 读不到 `super` 大小时自动进 bootloader 补读
 - 自适应 Android 12 / Android 15 两类固件：boot v3/v4、vendor_boot v3/v4、LZ4 ramdisk、ext4 或 EROFS vendor、不同物理分区集合与 OEM/VGC 变体数量
-- 从 OTA 的 `updater-script` 自动补全静态表之外的物理分区（如 A15 的 `qweslicstore`、`rtice`），并生成刷机脚本读取的镜像清单
+- 从 `updater-script` 自动补全静态表之外的物理分区（如 A15 的 `qweslicstore`、`rtice`），并生成刷机脚本读取的镜像清单
 - `devcfg` 按 `ro.vivo.boot.devcfg_type` 只打包并刷写匹配的镜像（`--devcfg-type` 可覆盖）
-- 提取选中 OEM 制式的修复镜像；加 `--all-oem` 时提取全部制式
+- 提取选中 OEM 制式的修复镜像；`--all-oem` 时提取全部制式
 - 提取 `vgc/` 变体并写入 `super`
-- 复制完整线刷脚本所需的 bootloader、modem、xbl、tz 等物理镜像
+- 复制完整线刷所需的 bootloader、modem、xbl、tz 等物理镜像
 - 自动生成包内 `README.md`、`package.env`、平台对应的刷机脚本、校验脚本、构建报告和 SHA-256 清单
 - 目标平台决定脚本类型：`linux` / `macos` 为 bash，`windows` 为原生 PowerShell + `.cmd`
 - 可选 Windows 目标：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
@@ -33,17 +111,19 @@
 
 ## 环境要求
 
+### 构建端
+
 | 工具 | 用途 |
 | --- | --- |
+| Linux x86_64 | 构建主机；当前只在 Linux 验证，macOS / Windows 构建未验证 |
 | `python3` 3.8+ | 运行转换器 |
 | `brotli` | 解压 `*.new.dat.br` |
 | `lpmake` / `lpdump` | 生成并校验 `super.img` |
 | `e2fsck` | 校验 ext4 分区镜像 |
-| `avbtool` | 校验 AVB 签名与链式分区 |
-| `liblz4` | 默认移除 AVB 时重压缩 ramdisk 与 EROFS fstab |
+| `avbtool` | 校验 AVB 签名与链式分区；`--skip-avb` 可跳过 |
+| `liblz4` | 默认移除 AVB 时重压缩 ramdisk 与 EROFS fstab；`--keep-avb` 可跳过 |
 | `adb` / `fastboot` | 仅在 `--probe-device` / `--require-device` 时探测；刷机时使用 |
-| `bash` | Linux / macOS 包的刷机脚本 |
-| PowerShell 5.1+ | Windows 包的刷机脚本；Windows 10/11 自带 |
+| 约 25 GiB 空闲磁盘 | 峰值约为动态分区总和 × 2 + 固件大小 × 2 |
 
 Debian / Ubuntu：
 
@@ -53,26 +133,14 @@ sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs liblz4-1
 
 `avbtool` 来自 AOSP `external/avb`；部分发行版需要自行放入 `PATH`。
 
-## 准备卡刷包
+### 刷机端
 
-输入必须是 **解包后的目录**，至少包含：
+| 平台 | 要求 |
+| --- | --- |
+| Linux / macOS | `bash`、Android platform-tools（`adb` / `fastboot`）、USB 连接 |
+| Windows | PowerShell 5.1+（Windows 10/11 自带）、Android platform-tools、USB 连接 |
 
-```text
-META-INF/com/android/metadata
-META-INF/com/google/android/updater-script
-dynamic_partitions_op_list
-*.transfer.list
-*.new.dat  或  *.new.dat.N  或  *.new.dat.br
-oem/        # 可选，OEM 制式
-vgc/        # 可选，VGC 变体
-firmware-update/
-```
-
-如果拿到的是 zip：
-
-```bash
-unzip -q <full-ota>.zip -d <full-ota>
-```
+刷机包默认跟随构建主机生成脚本；给 Windows 用户制作时加 `--target-platform windows`。
 
 ## 快速开始
 
@@ -85,15 +153,13 @@ cd <repo>
 
 默认输出到 `out/<OTA 名称>-fastboot/`，其中 `<OTA 名称>` 取自 OTA 元数据的 `post-version`，而非来源目录名。例如 `.firmwares/PD2171_A_12.0.20.11.W10.V000L1-update-full` 对应 `out/PD2171_A_12.0.20.11.W10.V000L1-fastboot/`。
 
-默认**不读取**已连接设备，产物只由 OTA 与命令行参数决定，因此同一个 OTA
-重复构建得到相同的 `super.img`。需要按当前手机读取 `super` 大小、OEM/VGC
-身份或 `devcfg` 类型时，显式加 `--probe-device`：
+默认**不读取**已连接设备，产物只由 OTA 与命令行参数决定，因此同一个 OTA 重复构建得到相同的 `super.img`。需要按当前手机读取 `super` 大小、OEM/VGC 身份或 `devcfg` 类型时，显式加 `--probe-device`：
 
 ```bash
 ./ota2fastboot.py /path/to/<full-ota> --probe-device
 ```
 
-探测只接受 ADB 连接（已开启 USB 调试）。ADB 普通权限读不到 `super` 精确大小时，会自动重启到 bootloader，用 `fastboot getvar` 读完剩余数据，再自动重启回 Android。整个过程不写入、不刷机、不解锁。多设备时用 `--serial` 指定。发布包建议固定 `--device-size`，不要依赖探测结果。
+探测只接受 ADB 连接（已开启 USB 调试）。ADB 普通权限读不到 `super` 精确大小时，会自动重启到 bootloader 用 `fastboot getvar` 读完，再重启回 Android。整个过程不写入、不刷机、不解锁。多设备时用 `--serial` 指定。发布包建议固定 `--device-size`，不要依赖探测结果。
 
 先看计划、不写镜像：
 
@@ -101,7 +167,7 @@ cd <repo>
 ./ota2fastboot.py /path/to/<full-ota> --dry-run
 ```
 
-制作完成后，按包的目标平台运行对应脚本。
+制作完成后，按包的目标平台刷机。
 
 Linux / macOS 包（默认跟随制作系统）：
 
@@ -126,8 +192,7 @@ cd out\<OTA 名称>-fastboot
 
 `.cmd` 启动器会以 `-ExecutionPolicy Bypass` 调用同名 `.ps1`，无需修改系统执行策略。
 
-全部分区写完、自动重启之前，脚本会询问是否清空数据（默认保留）。确认后只清理
-`userdata`、`metadata`、`cache`、`frp`，已写入的系统分区不受影响。
+全部分区写完、自动重启之前，脚本会询问是否清空数据（默认保留）。确认后只清理 `userdata`、`metadata`、`cache`、`frp`，已写入的系统分区不受影响。
 
 ## 输出结构
 
@@ -185,8 +250,7 @@ out/<OTA 名称>-fastboot/
         └── vbmeta_oem_<选中制式>.img
 ```
 
-`manifest.sha256` 覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。
-`device-info.txt` 在刷机时写入包目录，记录刷机前的机型、OEM、Android 版本和包版本。
+`manifest.sha256` 覆盖除 `meta/build.log` 和清单文件自身以外的全部文件。`device-info.txt` 在刷机时写入包目录，记录刷机前的机型、OEM、Android 版本和包版本。
 
 ## 刷机与校验脚本
 
@@ -198,10 +262,7 @@ out/<OTA 名称>-fastboot/
 | 校验包 | `verify.sh` | `verify.ps1` 或 `verify.cmd` |
 | 旧名称别名 | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
 
-安全线刷会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、
-`vbmeta*`、`super`，并在最后修复 OEM 身份，风险低：失败后仍可进入 Fastboot。
-完整线刷额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等，风险高：bootloader
-写入中断可能无法用 EDL 之外的方式恢复。
+安全线刷会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、`vbmeta*`、`super`，并在最后修复 OEM 身份，风险低：失败后仍可进入 Fastboot。完整线刷额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等，风险高：bootloader 写入中断可能无法用 EDL 之外的方式恢复。
 
 `flash-safe.sh` / `flash-safe.cmd` 为旧名称，保留为 `flash` 的兼容别名。
 
@@ -232,38 +293,23 @@ OEM 修复：
 .\fix-oem.cmd --filter CT-BMW
 ```
 
-默认只打包 `super` 使用的 OEM 变体。需要包内保留全部制式时，构建时加
-`--all-oem`。
+默认只打包 `super` 使用的 OEM 变体。需要包内保留全部制式时，构建时加 `--all-oem`。
 
 ## AVB、dm-verity 与强制加密
 
 生成的包默认按“关闭校验、取消强制加密”的方向处理：
 
-- 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及
-  `vendor.img` 的 `/etc/fstab.qcom`；`vendor.img` 为 ext4 或 EROFS 时自动识别，
-  Android 12 与 Android 15 的两种格式都支持；
-- 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、
-  `fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、
-  `keepverity`、`keepforceencrypt` 等标记；
-- 写入 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 时附加
-  `--disable-verity --disable-verification`。
+- 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及 `vendor.img` 的 `/etc/fstab.qcom`；`vendor.img` 为 ext4 或 EROFS 时自动识别，Android 12 与 Android 15 的两种格式都支持；
+- 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、`keepverity`、`keepforceencrypt` 等标记；
+- 写入 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 时附加 `--disable-verity --disable-verification`。
 
-补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio，
-也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成。
-带 boot v4 签名的 ramdisk 只要新帧仍在原页数内就允许增长；跨页才报错。
+补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio，也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成。带 boot v4 签名的 ramdisk 只要新帧仍在原页数内就允许增长；跨页才报错。
 
-若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的
-`AVB_STRIPPED` 会记录最终状态，刷机脚本据此决定是否附加禁用参数。
+若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的 `AVB_STRIPPED` 会记录最终状态，刷机脚本据此决定是否附加禁用参数。
 
-`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，所以刷机后再次
-执行 `verify.sh` 会提示这些文件校验失败；这是 `fastboot` 的正常行为，不是
-文件损坏。
+`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，所以刷机后再次执行 `verify.sh` 会提示这些文件校验失败；这是 `fastboot` 的正常行为，不是文件损坏。
 
-移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部
-写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用
-`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦
-`frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。
-只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
+移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用 `fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 `frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
 ## 常用选项
 
@@ -321,10 +367,9 @@ OEM 修复：
 ./ota2fastboot.py /path/to/<full-ota> --all-oem
 ```
 
-## 读取 ADB 设备（可选）
+## 设备探测（可选）
 
-默认不探测设备。只有传入 `--probe-device` 或 `--require-device` 时才读取。
-转换器只接受 **ADB 连接**。若手机只处于 Fastboot 模式，不会探测；请先启动 Android 并开启 USB 调试。探测不写入、不刷机、不解锁。
+默认不探测设备。只有传入 `--probe-device` 或 `--require-device` 时才读取。转换器只接受 **ADB 连接**。若手机只处于 Fastboot 模式，不会探测；请先启动 Android 并开启 USB 调试。探测不写入、不刷机、不解锁。
 
 | 阶段 | 读取内容 | 用途 |
 | --- | --- | --- |
@@ -343,7 +388,7 @@ OEM 修复：
 - ADB 重启至 bootloader 再返回 Android 需要一定时间；期间请保持 USB 连接。
 - 为了可复现产物，发布包建议 **不加** `--probe-device`，并显式指定 `--device-size`。
 
-## 校验内容
+## 构建校验
 
 1. `e2fsck -fn`：所有 ext4 镜像，包括 `oem`、`vgc`
 2. `lpdump`：确认 `super.img` 中每个动态分区存在且不小于 op list 声明值
@@ -401,6 +446,10 @@ $env:SKIP_MODEL_CHECK = "1"
 **提示 `lpmake not found`**：安装 `android-sdk-libsparse-utils`。
 
 **提示磁盘不足**：峰值约为动态分区总和 × 2 + 固件大小 × 2。大包需要约 25 GiB 空闲空间。
+
+**提示 `dynamic_partitions_op_list not found`**：输入不是完整解包目录，或拿到的不是 block OTA。重新解包官方全量包。
+
+**提示 `unsupported ota-type`**：`metadata` 中不是 `BLOCK`，例如 `payload.bin` 的 A/B OTA，本工具不支持。
 
 **刷完卡在开机 logo**：用 `./flash.sh`（Windows 用 `.\flash.cmd`）回刷旧包；或确认是否需要同步更新 bootloader。
 
