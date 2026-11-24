@@ -21,6 +21,7 @@ $script:PackageTitle = 'vivo/iQOO fastboot package'
 $script:PackageVersion = ''
 $script:ModelRegex = ''
 $script:OemIdentity = ''
+$script:AvbStripped = $false
 
 $script:DeviceMode = ''
 $script:DeviceSerial = ''
@@ -113,6 +114,7 @@ function Read-PackageEnv {
                 'PACKAGE_VERSION' { $script:PackageVersion = $value }
                 'MODEL_REGEX' { $script:ModelRegex = $value }
                 'OEM_IDENTITY' { $script:OemIdentity = $value }
+                'AVB_STRIPPED' { $script:AvbStripped = ($value -eq '1') }
             }
         }
     }
@@ -367,7 +369,12 @@ function Flash-Part {
         exit 1
     }
     Write-Host " -- $Partition <- $Image"
-    Invoke-Fastboot -Arguments @('flash', $Partition, $Image)
+    $arguments = @('flash', $Partition, $Image)
+    if ($script:AvbStripped -and $Partition -like 'vbmeta*') {
+        $arguments = @('--disable-verity', '--disable-verification') + $arguments
+        Write-Host '    (AVB verification disabled for this vbmeta image)'
+    }
+    Invoke-Fastboot -Arguments $arguments
     if ($LASTEXITCODE -ne 0) {
         [Console]::Error.WriteLine("-- Flash $Partition failed.")
         Pause-ForUser 'Press Enter to exit...'

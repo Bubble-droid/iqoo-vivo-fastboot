@@ -90,6 +90,7 @@ def write_package_env(
     props: dict[str, str],
     model_regex: str,
     oem_name: str,
+    avb_stripped: bool,
     log: Log,
 ) -> None:
     version = props.get("post-version") or out.name
@@ -102,6 +103,7 @@ def write_package_env(
         f"PACKAGE_VERSION={shlex.quote(props.get('post-version', ''))}",
         f"MODEL_REGEX={shlex.quote(model_regex)}",
         f"OEM_IDENTITY={shlex.quote(identity)}",
+        f"AVB_STRIPPED={1 if avb_stripped else 0}",
         "",
     ]
     path = out / "package.env"

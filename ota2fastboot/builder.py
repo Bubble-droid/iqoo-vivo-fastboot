@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .avb import patch_images
 from .constants import BLOCK, DEFAULT_DEVICE_SIZE, SUPER_GROUP
 from .device import (
     DeviceInfo,
@@ -294,7 +295,12 @@ def extract_partitions(
             target = raw_dir / f"{name}.img"
         if not tl.is_file():
             raise ToolError(f"missing transfer list for {name}: {tl}")
-        if not reuse_image(target, plan.sizes[name], args.reuse_raw, log):
+        # The vendor image is modified by the default AVB removal, so a reused
+        # copy would fail the AVB chain check and would not match the OTA.
+        reuse = args.reuse_raw and (
+            name != "vendor" or getattr(args, "keep_avb", False)
+        )
+        if not reuse_image(target, plan.sizes[name], reuse, log):
             extract_partition(name, tl, target, plan.sizes[name], log)
         raw_parts[name] = target
     return raw_parts
@@ -348,6 +354,7 @@ def assemble_super(
     plan: SuperPlan,
     args: argparse.Namespace,
     log: Log,
+    allow_reuse: bool = True,
 ) -> dict:
     if args.no_super:
         log("super.img skipped (--no-super)")
@@ -355,7 +362,7 @@ def assemble_super(
 
     super_path = out_fw / "super.img"
     super_parts: dict = {}
-    if args.reuse_super and super_path.is_file():
+    if args.reuse_super and allow_reuse and super_path.is_file():
         try:
             candidate = lp_metadata(super_path, log)
         except ToolError as error:
@@ -452,6 +459,8 @@ def verify_chain(
         log("  skipped (--skip-avb)")
         return {}
 
+    if not getattr(args, "keep_avb", False):
+        log("  checking the unmodified OTA images; AVB is stripped afterwards")
     results = verify_avb(out, avb_files, avb_targets, log)
     failed = [name for name, ok in results.items() if not ok]
     if failed:
@@ -467,6 +476,7 @@ def install_scripts(
     plan: SuperPlan,
     args: argparse.Namespace,
     platform: str,
+    avb_stripped: bool,
     log: Log,
 ) -> list[str]:
     log("=== package scripts ===")
@@ -477,7 +487,9 @@ def install_scripts(
         log("  skipped (--no-scripts)")
         return []
     script_names = copy_scripts(scripts_dir, out, platform, log)
-    write_package_env(out, props, "|".join(models), plan.oem_name, log)
+    write_package_env(
+        out, props, "|".join(models), plan.oem_name, avb_stripped, log
+    )
     check_script_contract(out, platform, log)
     return script_names
 
@@ -654,6 +666,10 @@ def _run(
             f"{name}={fmt_size(size)}" for name, size in sorted(plan.sizes.items())
         )
     )
+    log(
+        "AVB / verity / force-encryption removal: "
+        + ("disabled (--keep-avb)" if args.keep_avb else "enabled")
+    )
 
     data_bytes = sum(plan.sizes.values())
     need = (
@@ -695,14 +711,34 @@ def _run(
     else:
         fsck_results = fsck_images(fsck_targets, log)
 
-    assemble_super(out_fw, raw_parts, plan, args, log)
     oem_vbmeta = (
         out_fw / "oem" / f"vbmeta_oem_{plan.oem_name}.img"
         if plan.oem_name != "none"
         else None
     )
+    # Verify the untouched OTA images: the AVB descriptors no longer match
+    # once the fstab patches below rewrite boot, vendor_boot and vendor.
     avb_results = verify_chain(
         out, out_fw, raw_parts, args, log, oem_vbmeta=oem_vbmeta
+    )
+
+    avb_stripped = not getattr(args, "keep_avb", False)
+    avb_patch: dict = {}
+    log("=== AVB / verity / force-encryption removal ===")
+    if avb_stripped:
+        avb_patch = patch_images(
+            out_fw, raw_parts, log, include_vendor=not args.no_super
+        )
+    else:
+        log("  skipped (--keep-avb)")
+
+    assemble_super(
+        out_fw,
+        raw_parts,
+        plan,
+        args,
+        log,
+        allow_reuse=not bool(avb_patch.get("vendor")),
     )
 
     script_names = install_scripts(
@@ -713,6 +749,7 @@ def _run(
         plan,
         args,
         target_platform,
+        avb_stripped,
         log,
     )
 
@@ -736,6 +773,7 @@ def _run(
                 device_size=plan.device_size,
                 target_platform=target_platform,
                 platform_tools_bundled=bool(platform_tools),
+                avb_stripped=avb_stripped,
             ),
             encoding="utf-8",
         )
@@ -770,6 +808,8 @@ def _run(
             keep_serial=args.keep_serial,
             target_platform=target_platform,
             oem_variant_count=len(packaged_oem),
+            avb_stripped=avb_stripped,
+            avb_patch=avb_patch,
         ),
         encoding="utf-8",
     )
@@ -801,6 +841,8 @@ def _run(
         "scripts": script_names,
         "fsck": fsck_results,
         "avb": avb_results,
+        "avb_stripped": avb_stripped,
+        "avb_patch": avb_patch,
     }
     build_json = meta_dir / "build.json"
     build_json.write_text(

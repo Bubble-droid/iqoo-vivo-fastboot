@@ -24,6 +24,7 @@
 - 目标平台决定脚本类型：`linux` / `macos` 为 bash，`windows` 为原生 PowerShell + `.cmd`
 - 可选 Windows 目标：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
 - 构建日志与报告默认脱敏设备序列号，只保留后四位；`--keep-serial` 可关闭
+- 默认移除 `boot`、`vendor_boot`、`vendor` 内 fstab 的 AVB / dm-verity / 强制加密标记，并在刷 `vbmeta*` 时附加禁用校验参数；`--keep-avb` 可保留原设置
 - 校验：`e2fsck`、`lpdump`、AVB 链、脚本引用完整性、稀疏镜像展开尺寸
 - 生成文件中不包含构建机的绝对路径
 
@@ -36,6 +37,7 @@
 | `lpmake` / `lpdump` | 生成并校验 `super.img` |
 | `e2fsck` | 校验 ext4 分区镜像 |
 | `avbtool` | 校验 AVB 签名与链式分区 |
+| `liblz4` | 默认移除 AVB 时重压缩 ramdisk 与 EROFS fstab |
 | `adb` / `fastboot` | 构建时通过 ADB 探测；必要时自动进 bootloader 读取，刷机时使用 |
 | `bash` | Linux / macOS 包的刷机脚本 |
 | PowerShell 5.1+ | Windows 包的刷机脚本；Windows 10/11 自带 |
@@ -43,7 +45,7 @@
 Debian / Ubuntu：
 
 ```bash
-sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs
+sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs liblz4-1
 ```
 
 `avbtool` 来自 AOSP `external/avb`；部分发行版需要自行放入 `PATH`。
@@ -223,6 +225,31 @@ OEM 修复：
 默认只打包 `super` 使用的 OEM 变体。需要包内保留全部制式时，构建时加
 `--all-oem`。
 
+## AVB、dm-verity 与强制加密
+
+生成的包默认按“关闭校验、取消强制加密”的方向处理：
+
+- 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及
+  `vendor.img` 的 `/etc/fstab.qcom`；
+- 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、
+  `fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、
+  `keepverity`、`keepforceencrypt` 等标记；
+- 写入 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 时附加
+  `--disable-verity --disable-verification`。
+
+补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio 或
+修改 EROFS inode 大小。AVB 链校验在打补丁之前对原始 OTA 镜像完成。
+
+若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的
+`AVB_STRIPPED` 会记录最终状态，刷机脚本据此决定是否附加禁用参数。
+
+`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，所以刷机后再次
+执行 `verify.sh` 会提示这些文件校验失败；这是 `fastboot` 的正常行为，不是
+文件损坏。
+
+移除强制加密后，已加密的 `userdata` 可能需要清空才能启动；脚本不会自动清空
+数据。需要时手动执行 `fastboot -w`（会丢失全部数据）。
+
 ## 常用选项
 
 | 选项 | 说明 |
@@ -245,6 +272,7 @@ OEM 修复：
 | `--reuse-raw` | 配合 `--resume`：分区镜像尺寸匹配时跳过解包 |
 | `--reuse-super` | 配合 `--resume`：`super.img` 匹配时跳过 `lpmake` |
 | `--keep-raw` | 保留 `out/<名>/.raw/` 下的中间镜像 |
+| `--keep-avb` | 保留 OTA 原始的 AVB / dm-verity / 强制加密设置；默认移除并在刷 `vbmeta*` 时禁用校验 |
 | `--skip-fsck` / `--skip-avb` | 跳过对应校验，不建议 |
 | `--no-super` / `--no-scripts` | 只生成部分内容，调试用 |
 | `--force` | 删除非空输出目录后重建 |
@@ -303,6 +331,8 @@ OEM 修复：
    - `vbmeta_system`（含全部动态分区）
    - `vbmeta_oem`
    - `vbmeta_vgc`
+
+   默认移除 AVB 时，这一步在打补丁之前对原始 OTA 镜像执行；打补丁后不再校验 AVB。
 4. 脚本引用检查：目标平台对应的 `flash` / `flash-full` 脚本中每个必需镜像都存在
 5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
@@ -339,6 +369,7 @@ $env:SKIP_MODEL_CHECK = "1"
 - 完整线刷脚本（`flash-full.sh` / `flash-full.cmd`）会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用安全线刷脚本（`flash.sh` / `flash.cmd`）。
 - 安全线刷脚本不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
+- 默认生成的包会移除 AVB / dm-verity / 强制加密，并在刷 `vbmeta*` 时禁用校验；系统完整性校验因此失效。只在你自己的设备上使用。
 - 刷机会清空数据，先备份。
 - 必须解锁 Bootloader。
 
@@ -364,6 +395,7 @@ $env:SKIP_MODEL_CHECK = "1"
 | `ota2fastboot/` | 转换器源码包 |
 | `ota2fastboot/cli.py` | 命令行参数 |
 | `ota2fastboot/builder.py` | 构建流程 |
+| `ota2fastboot/avb.py` | 移除 fstab 中的 AVB / verity / 强制加密标记 |
 | `ota2fastboot/device.py` | ADB 探测、必要时进 bootloader 补读、机型匹配 |
 | `ota2fastboot/ota.py` | OTA 元数据、transfer list、op list |
 | `ota2fastboot/stream.py` | `.new.dat` 解包 |

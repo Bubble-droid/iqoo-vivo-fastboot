@@ -24,6 +24,7 @@
 - The target platform selects the scripts: `linux` / `macos` get bash, `windows` gets native PowerShell plus `.cmd`
 - Optional Windows target: `--target-platform windows` with `--platform-tools-dir` bundles the Windows `adb.exe` / `fastboot.exe` under `platform-tools/`
 - Masks the device serial in the build log and reports by default; `--keep-serial` opts out
+- Removes AVB, dm-verity and force-encryption flags from the fstab inside `boot`, `vendor_boot` and `vendor` by default, and disables vbmeta verification while flashing; `--keep-avb` keeps the original settings
 - Verifies with `e2fsck`, `lpdump`, the AVB chain, script reference completeness and sparse image expansion size
 - Generated files never contain the absolute path of the build machine
 
@@ -36,6 +37,7 @@
 | `lpmake` / `lpdump` | Build and inspect `super.img` |
 | `e2fsck` | Check ext4 partition images |
 | `avbtool` | Verify AVB signatures and chained partitions |
+| `liblz4` | Recompress the ramdisk and EROFS fstab when AVB is removed (default) |
 | `adb` / `fastboot` | Probe over ADB at build time, with an automatic bootloader pass when needed; flash the package |
 | `bash` | Flash scripts in Linux / macOS packages |
 | PowerShell 5.1+ | Flash scripts in Windows packages; included with Windows 10/11 |
@@ -43,7 +45,7 @@
 Debian / Ubuntu:
 
 ```bash
-sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs
+sudo apt install python3 brotli android-sdk-libsparse-utils e2fsprogs liblz4-1
 ```
 
 `avbtool` comes from AOSP `external/avb`; some distributions require you to add it to `PATH` yourself.
@@ -227,6 +229,35 @@ OEM repair:
 By default only the OEM variant used in `super` is packaged. Add `--all-oem`
 at build time to keep every variant.
 
+## AVB, dm-verity and force-encryption
+
+Generated packages disable verification and force-encryption by default:
+
+- The `fstab.qcom` inside the `boot.img` and `vendor_boot.img` ramdisks and
+  `/etc/fstab.qcom` inside `vendor.img` are rewritten.
+- Flags such as `avb=...`, `avb_keys=...`, `avb`, `verify`, `vverify`,
+  `fileencryption=...`, `keydirectory=...`, `metadata_encryption=...`,
+  `keepverity` and `keepforceencrypt` are removed.
+- `vbmeta`, `vbmeta_system`, `vbmeta_oem` and `vbmeta_vgc` are flashed with
+  `--disable-verity --disable-verification`.
+
+The patch keeps every file size unchanged by padding the removed flags with
+spaces, so no cpio archive has to be rebuilt and no EROFS inode size changes.
+The AVB chain is verified on the original OTA images before the patch runs.
+
+Pass `--keep-avb` at build time to keep the stock verification and encryption
+settings. The generated `package.env` records the final state in
+`AVB_STRIPPED`; the flash scripts use it to decide whether to add the disable
+flags.
+
+With these flags `fastboot` rewrites the `vbmeta*` image in place, so running
+`verify.sh` again after flashing reports those files as changed. That is normal
+fastboot behaviour, not corruption.
+
+Removing force-encryption can make an already encrypted `userdata` partition
+unbootable until it is formatted. The scripts never format it automatically;
+run `fastboot -w` yourself when needed (this erases all data).
+
 ## Common options
 
 | Option | Description |
@@ -249,6 +280,7 @@ at build time to keep every variant.
 | `--reuse-raw` | With `--resume`: skip extraction when a partition image already has the expected size |
 | `--reuse-super` | With `--resume`: skip `lpmake` when `super.img` matches |
 | `--keep-raw` | Keep intermediate images under `out/<name>/.raw/` |
+| `--keep-avb` | Keep the OTA AVB / dm-verity / force-encryption settings; default removes them and disables vbmeta verification |
 | `--skip-fsck` / `--skip-avb` | Skip the corresponding check; not recommended |
 | `--no-super` / `--no-scripts` | Generate only part of the package, for debugging |
 | `--force` | Delete a non-empty output directory and rebuild |
@@ -307,6 +339,9 @@ The converter accepts **ADB connections only**. A phone that is visible only in 
    - `vbmeta_system` (covering all dynamic partitions)
    - `vbmeta_oem`
    - `vbmeta_vgc`
+
+   With the default AVB removal this runs on the original OTA images before
+   the patch; the patched images are not AVB-verified.
 4. Script reference check: every required image referenced by the target package's `flash` / `flash-full` scripts exists
 5. The sparse image expands to exactly the requested `super` size (`--device-size`, the device probe value, or the default)
 6. The SHA-256 manifest can be verified:
@@ -344,6 +379,7 @@ $env:SKIP_MODEL_CHECK = "1"
 - The full flash scripts (`flash-full.sh` / `flash-full.cmd`) write the bootloader chain and UFS firmware. When EDL recovery is unavailable, prefer the safe scripts (`flash.sh` / `flash.cmd`).
 - The safe scripts do not write `storage`, `xbl`, `xbl_config`, `abl`, `tz`, `hyp`, `aop`, `devcfg`, `keymaster`, `uefisecapp`, `uefi`, `shrm`, `cpucp`, `imagefv`, `multiimg*`, `storsec`, `featenabler`, `toolsfv` or `xbl_ramdump`.
 - Flashing across versions may raise the anti-rollback counter; the device may refuse a bootloader downgrade.
+- Generated packages remove AVB / dm-verity / force-encryption and disable vbmeta verification by default; system integrity checks no longer apply. Use them only on your own device.
 - Flashing wipes data; back up first.
 - The bootloader must be unlocked.
 
@@ -369,6 +405,7 @@ $env:SKIP_MODEL_CHECK = "1"
 | `ota2fastboot/` | Converter source package |
 | `ota2fastboot/cli.py` | Command line arguments |
 | `ota2fastboot/builder.py` | Build pipeline |
+| `ota2fastboot/avb.py` | Remove AVB / verity / force-encryption flags from fstab |
 | `ota2fastboot/device.py` | ADB probe, automatic bootloader pass, model matching |
 | `ota2fastboot/ota.py` | OTA metadata, transfer lists, op lists |
 | `ota2fastboot/stream.py` | `.new.dat` extraction |

@@ -20,7 +20,7 @@ The input is an *extracted* full OTA directory (the one that contains
     <out>/verify.ps1 / .cmd        # check manifest.sha256
     <out>/common.ps1               # shared helpers for the scripts above
     # Shared:
-    <out>/package.env              # title, model pattern, default OEM identity
+    <out>/package.env              # title, model pattern, OEM identity, AVB state
     <out>/meta/BUILD.md            # build report
     <out>/meta/build.json          # machine-readable build result
     <out>/meta/build.log           # build log (paths and serial redacted)
@@ -48,18 +48,18 @@ What the converter does:
    ``.new.dat`` streams and single-file Brotli ``.new.dat.br`` streams;
 4. rebuilds ``vm-bootsys`` (block image that lives outside ``super``) when the
    OTA provides it;
-5. builds a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
-   including the ``oem`` and ``vgc`` variants selected on the command line
-   (defaults: the connected device's identity, otherwise a ``FULL_SC_NULL``
-   variant for the OTA device and ``V000``);
-6. extracts the OEM variant placed in ``super`` so the package repair script can
+5. extracts the OEM variant placed in ``super`` so the package repair script can
    restore the identity; ``--all-oem`` packages every variant from the OTA;
-7. copies the physical images referenced by the full flash script (boot chain,
+6. copies the physical images referenced by the full flash script (boot chain,
    modem, xbl, ...), using the OTA filenames as the fallback list;
-8. verifies the result: ``e2fsck`` on every ext4 image, ``lpdump`` on the
-   generated super metadata, and ``avbtool verify_image
+7. verifies the original images: ``e2fsck`` on every ext4 image, ``lpdump`` on
+   the generated super metadata, and ``avbtool verify_image
    --follow_chain_partitions`` for ``vbmeta``, ``vbmeta_system``,
    ``vbmeta_oem`` and ``vbmeta_vgc``;
+8. removes the AVB, dm-verity and force-encryption flags from the fstab inside
+   ``boot``, ``vendor_boot`` and ``vendor`` (skip with ``--keep-avb``), then
+   builds a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
+   including the selected ``oem`` and ``vgc`` variants;
 9. writes the package README, a SHA-256 manifest, a build report and the
    platform-specific scripts from ``scripts/bash`` or ``scripts/windows``;
    with ``--target-platform windows`` and ``--platform-tools-dir DIR`` the

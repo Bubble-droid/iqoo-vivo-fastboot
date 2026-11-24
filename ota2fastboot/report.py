@@ -65,6 +65,7 @@ def render_package_readme(
     device_size: int,
     target_platform: str,
     platform_tools_bundled: bool,
+    avb_stripped: bool,
 ) -> str:
     version = props.get("post-version", props.get("post-build-incremental", "unknown"))
     device = props.get("pre-device", "unknown")
@@ -161,6 +162,31 @@ def render_package_readme(
             "Linux 与 macOS 包只包含 bash 脚本。"
         )
 
+    if avb_stripped:
+        avb_note = (
+            "## AVB 与强制加密\n\n"
+            "本包在构建时移除了 fstab 中的 AVB / dm-verity / 强制加密标记：\n\n"
+            "- `boot.img` 与 `vendor_boot.img` 的 `fstab.qcom`\n"
+            "- `vendor.img` 的 `/etc/fstab.qcom`\n"
+            "- 移除的标记包括 `avb=...`、`avb_keys=...`、`verify`、`vverify`、"
+            "`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、"
+            "`keepverity`、`keepforceencrypt` 等\n\n"
+            "刷机脚本写入 `vbmeta*` 时会附加 `--disable-verity "
+            "--disable-verification`。若需要保留原厂校验，重新构建时加 "
+            "`--keep-avb`。\n\n"
+            "`fastboot` 使用这两个参数时会原地改写包内的 `vbmeta*` 镜像，"
+            "刷机后再执行 `verify.sh` 会提示这些文件校验失败；这是正常行为。\n\n"
+            "移除强制加密后，首次启动可能需要清空 `userdata`。脚本不会自动清空"
+            "数据；需要时手动执行 `fastboot -w`（会丢失全部数据）。"
+        )
+    else:
+        avb_note = (
+            "## AVB 与强制加密\n\n"
+            "本包保留了 OTA 原始的 AVB / dm-verity / 强制加密设置"
+            "（构建时使用 `--keep-avb`）。刷机脚本不会附加 "
+            "`--disable-verity` / `--disable-verification`。"
+        )
+
     return f"""# {device} Fastboot 刷机包
 
 - 来源 OTA: `{package.name}`
@@ -206,6 +232,8 @@ def render_package_readme(
 写入中断可能只能靠 EDL 恢复。没有 EDL 手段时不要使用。
 
 {alias_note}
+
+{avb_note}
 
 ## OEM 与 VGC
 
@@ -254,6 +282,8 @@ def render_build_md(
     keep_serial: bool = True,
     target_platform: str = "linux",
     oem_variant_count: int = 0,
+    avb_stripped: bool = False,
+    avb_patch: dict | None = None,
 ) -> str:
     del log  # kept for call-site symmetry with the other builders
     lines = [
@@ -339,6 +369,46 @@ def render_build_md(
     ]
     for name in sorted(super_parts):
         lines.append(f"| `{name}` | {super_parts[name]} |")
+
+    lines += ["", "## AVB / verity / force-encryption", ""]
+    if avb_stripped:
+        lines += [
+            "The build removed AVB, dm-verity and force-encryption flags from the",
+            "fstab files inside `boot.img`, `vendor_boot.img` and `vendor.img`.",
+            "Removed text is padded with spaces, so every file keeps its original",
+            "size. The flash scripts add `--disable-verity --disable-verification`",
+            "when they write a `vbmeta*` partition.",
+            "",
+        ]
+        patch = avb_patch or {}
+        if patch:
+            lines += [
+                "| image | patched entries | flags removed |",
+                "|-------|-----------------|---------------|",
+            ]
+            for name in ("boot", "vendor_boot", "vendor"):
+                entry = patch.get(name)
+                if not entry:
+                    lines.append(f"| `{name}.img` | none | 0 |")
+                    continue
+                entries = ", ".join(f"`{item}`" for item in entry.get("entries", []))
+                lines.append(
+                    f"| `{name}.img` | {entries} | {len(entry.get('flags', []))} |"
+                )
+            lines.append("")
+        lines += [
+            "Removing force-encryption may require formatting `userdata`; the",
+            "flash scripts never do that automatically.",
+            "",
+        ]
+    else:
+        lines += [
+            "AVB removal was disabled with `--keep-avb`. The OTA AVB metadata,",
+            "dm-verity and force-encryption flags are kept, and the flash scripts",
+            "do not pass the vbmeta disable flags.",
+            "",
+        ]
+
     if target_platform == "windows":
         flashing = [
             "```powershell",

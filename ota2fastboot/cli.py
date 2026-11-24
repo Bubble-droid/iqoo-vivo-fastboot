@@ -116,6 +116,15 @@ def make_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--skip-fsck", action="store_true", help="skip e2fsck")
     parser.add_argument("--skip-avb", action="store_true", help="skip avbtool checks")
+    parser.add_argument(
+        "--keep-avb",
+        action="store_true",
+        help=(
+            "keep AVB, dm-verity and force-encryption untouched; by default the "
+            "build removes them from the fstab inside boot, vendor_boot and "
+            "vendor, and the flash scripts disable vbmeta verification"
+        ),
+    )
     parser.add_argument("--keep-raw", action="store_true", help="keep extracted partition images")
     parser.add_argument(
         "--resume",
