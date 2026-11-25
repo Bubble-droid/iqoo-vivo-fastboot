@@ -93,8 +93,13 @@ def extract_partition(
     reader = ChainReader(streams)
     written = 0
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write to a temporary file and rename only after the whole stream has been
+    # consumed.  A reboot or kill during extraction used to leave a full-size
+    # sparse file behind, which --reuse-raw then accepted as valid.
+    tmp_path = out_path.with_name(out_path.name + ".part")
     try:
-        with out_path.open("wb") as destination:
+        tmp_path.unlink(missing_ok=True)
+        with tmp_path.open("wb") as destination:
             destination.truncate(size)
             for command, ranges in transfer.commands:
                 if command != "new":
@@ -115,6 +120,10 @@ def extract_partition(
             os.fsync(destination.fileno())
         if reader.read(1):
             raise ToolError(f"{name}: data stream has trailing bytes")
+        tmp_path.replace(out_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
     finally:
         reader.close()
 

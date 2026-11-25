@@ -1308,6 +1308,7 @@ def _vbmeta_header(data: bytes) -> dict:
     return {
         "auth_size": _be64(data, 12),
         "aux_size": _be64(data, 20),
+        "algorithm_type": _be32(data, 28),
         "rollback_index": _be64(data, 112),
         "flags": _be32(data, 120),
         "rollback_index_location": _be32(data, 124),
@@ -1380,7 +1381,23 @@ def _partition_size(path: Path, sizes: dict[str, int] | None, name: str) -> int:
     return path.stat().st_size
 
 
-def _resign_image(path: Path, key: Path, log: Log) -> None:
+def _resign_image(
+    path: Path, key: Path, log: Log, check_signature: bool = True
+) -> bool:
+    """Re-sign a signed image; optionally leave unsigned vbmeta untouched.
+
+    ``check_signature`` is only valid for standalone vbmeta images, whose
+    header starts at offset 0.  ``boot``/``dtbo`` carry the vbmeta struct in a
+    footer, so they are passed to avbtool unconditionally.
+    """
+
+    if check_signature:
+        with path.open("rb") as stream:
+            magic = stream.read(256)
+        header = _vbmeta_header(magic)
+        if header["algorithm_type"] == 0:
+            log(f"  {path.name}: unsigned vbmeta, left untouched")
+            return False
     log(f"  {path.name}: re-signing with the custom key")
     _avbtool(
         [
@@ -1394,6 +1411,7 @@ def _resign_image(path: Path, key: Path, log: Log) -> None:
         ],
         log,
     )
+    return True
 
 
 def _resign_hash_image(
@@ -1502,8 +1520,8 @@ def resign_chain(
         path = out_fw / f"{name}.img"
         if not path.is_file():
             continue
-        _resign_image(path, key, log)
-        report["signed"].append(name)  # type: ignore[union-attr]
+        if _resign_image(path, key, log, check_signature=False):
+            report["signed"].append(name)  # type: ignore[union-attr]
     vendor_boot = out_fw / "vendor_boot.img"
     if vendor_boot.is_file():
         size = _partition_size(vendor_boot, sizes, "vendor_boot")
@@ -1552,14 +1570,14 @@ def resign_chain(
                 args.extend(["--include_descriptors_from_image", str(path)])
             log("  vbmeta_system.img: rebuilding descriptors with the custom key")
             _avbtool(args, log)
-        else:
-            _resign_image(vbmeta_system, key, log)
-        report["signed"].append("vbmeta_system")  # type: ignore[union-attr]
+            report["signed"].append("vbmeta_system")  # type: ignore[union-attr]
+        elif _resign_image(vbmeta_system, key, log):
+            report["signed"].append("vbmeta_system")  # type: ignore[union-attr]
 
     vbmeta_vgc = out_fw / "vbmeta_vgc.img"
     if vbmeta_vgc.is_file():
-        _resign_image(vbmeta_vgc, key, log)
-        report["signed"].append("vbmeta_vgc")  # type: ignore[union-attr]
+        if _resign_image(vbmeta_vgc, key, log):
+            report["signed"].append("vbmeta_vgc")  # type: ignore[union-attr]
 
     # Top-level vbmeta: keep the same chain slots, replace the public keys of
     # every partition we re-signed with our own.
