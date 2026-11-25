@@ -195,6 +195,25 @@ def render_package_readme(
             "刷机脚本不附加任何禁用参数。"
         )
 
+    nv_note = (
+        "\n\n### 基带、IMEI 与 AVB\n\n"
+        "AVB 重签只改动系统校验链，不涉及基带校准与 IMEI / MEID 存储。"
+        "改写 fstab、重算 hashtree、替换签名密钥都不会改变 NV 分区。"
+        "AVB 链覆盖 `boot`、`dtbo`、`vendor_boot`、`vendor`、"
+        "`vbmeta_system` 与顶层 `vbmeta`；IMEI / MEID 所在的 `persist`、"
+        "`modemst1`、`modemst2`、`fsg` 不在 OTA 包内，也不在 "
+        "`flash-items-*.txt` 中，构建不生成，刷机脚本不写、不擦。"
+        "清空数据只处理 `userdata`、`metadata`、`cache`、`frp`。\n\n"
+        "可能影响基带或 IMEI 的操作：跨大版本只刷 Android 分区"
+        "（`flash.sh` 不写 bootloader 与 modem，版本不匹配时 RIL 可能读不到）、"
+        "手动擦除 `persist` / `modemst1` / `modemst2` / `fsg` / `devinfo`，"
+        "以及降级触发的修复流程。A12 与 A15 之间切换应使用 "
+        "`flash-full.sh`。NV 分区一旦擦除，OTA 包无法恢复 IMEI，只能依赖"
+        "完整字库或 NV 备份。vivo 零售版对普通 `adb shell` 隐藏 IMEI，"
+        "`getprop persist.radio.imei` 为空并不表示丢失，应以设置或 "
+        "`*#06#` 为准。"
+    )
+
     return f"""# {device} Fastboot 刷机包
 
 - 来源 OTA: `{package.name}`
@@ -241,7 +260,7 @@ def render_package_readme(
 
 {alias_note}
 
-{avb_note}
+{avb_note}{nv_note}
 
 ## OEM 与 VGC
 
@@ -437,12 +456,29 @@ def render_build_md(
             "`WIPE_WITH_FASTBOOT_W=1` to opt in. Only data partitions are",
             "touched, so the system partitions stay as written.",
             "",
+            "Baseband calibration and IMEI/MEID storage are outside the AVB",
+            "chain: `persist`, `modemst1`, `modemst2` and `fsg` are not in",
+            "the package and the scripts never write or erase them. Possible",
+            "causes of IMEI problems are flashing only Android partitions",
+            "across a major version (bootloader and modem keep the old",
+            "release), erasing NV partitions by hand, or vendor repair flows",
+            "on downgrade. Use `flash-full.sh` for A12 <-> A15. An empty",
+            "`getprop persist.radio.imei` under `adb shell` is normal on vivo",
+            "retail builds; check Settings or dial `*#06#`.",
+            "",
         ]
     else:
         lines += [
             "AVB removal was disabled with `--keep-avb`. The OTA AVB metadata,",
             "dm-verity and force-encryption flags are kept, and the `vbmeta*`",
             "images are flashed unchanged.",
+            "",
+            "Baseband calibration and IMEI/MEID storage are not part of any",
+            "image in this package: `persist`, `modemst1`, `modemst2` and",
+            "`fsg` stay untouched. Cross-version flashes that write only",
+            "Android partitions can still leave RIL unable to read the",
+            "baseband or IMEI because the bootloader and modem keep the old",
+            "release; use `flash-full.sh` for A12 <-> A15.",
             "",
         ]
 

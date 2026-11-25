@@ -333,6 +333,23 @@ Pass `--avb-key ~/.config/iqoo-vivo-fastboot/avb.pem` to the build. Never commit
 
 Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they call `fastboot erase userdata`, then erase `metadata`, `cache` and `frp`; Android creates the filesystem on first boot. `fastboot -w` is no longer the default: it makes the host build a f2fs image as large as the whole userdata partition and flashes it sparse, and some A15 bootloaders stall during that transfer and leave a half-formatted userdata behind, causing a bootloop. Set `WIPE_WITH_FASTBOOT_W=1` to opt in. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
 
+### Baseband, IMEI and AVB
+
+AVB re-signing changes only the system verification chain. It does not touch baseband calibration or IMEI/MEID storage. Editing fstab, recomputing hashtrees and replacing the signing key leave the NV partitions unchanged.
+
+- The AVB chain covers `boot`, `dtbo`, `vendor_boot`, `vendor`, `vbmeta_system` and the top-level `vbmeta`. `vbmeta_vgc` is unsigned on some releases and is kept as-is.
+- IMEI/MEID live in `persist`, `modemst1`, `modemst2` and `fsg`; some platforms also use `devinfo`. These partitions are not in the OTA package or in `flash-items-*.txt`; the build does not create them and the flash scripts neither write nor erase them.
+- Clearing data touches only `userdata`, `metadata`, `cache` and `frp`; `persist` stays mounted. `fastboot -w` does not operate on NV partitions either.
+- Baseband firmware consists of `modem` (`NON-HLOS.bin`) plus `dsp`, `bluetooth` and `qupfw`, authenticated separately by Qualcomm PIL and unrelated to AVB. Unlocking and `verifiedbootstate=orange` affect only the trust chain, not NV storage.
+
+Operations that can affect baseband or IMEI:
+
+1. **Flashing only Android partitions across a major version.** `flash.sh` does not write the bootloader or modem. An A12 system paired with an A15 abl/modem (or vice versa) can leave RIL unable to read the baseband or IMEI. Use `flash-full.sh` when moving between A12 and A15 so xbl, abl, tz, hyp and modem are written together.
+2. **Erasing NV partitions manually.** Do not run `fastboot erase persist`, `modemst1`, `modemst2`, `fsg` or `devinfo`. Once erased, an OTA package cannot restore the IMEI; only a full dump or NV backup can.
+3. **Repair flows triggered by downgrades.** vivo may run extra repair or data-wipe steps when crossing versions backwards. Back up the full dump before cross-version experiments.
+
+When diagnosing, note that vivo retail builds hide the IMEI from plain `adb shell`: empty `getprop persist.radio.imei` or `ro.ril.oem.imei` does not prove the IMEI is gone. Check Settings → About phone or dial `*#06#`.
+
 ## Common options
 
 | Option | Description |

@@ -333,6 +333,23 @@ sha1sum ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
 
 移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后改用 `fastboot erase userdata`，再补擦 `metadata`、`cache`、`frp`，Android 首次开机会自行建立文件系统。`fastboot -w` 不再默认使用：它会让主机生成与整个 userdata 等大的 f2fs 镜像再以 sparse 写入，部分 A15 bootloader 会在传输中卡死并留下半格式化的 userdata，导致 bootloop；确需时设 `WIPE_WITH_FASTBOOT_W=1`。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
+### 基带、IMEI 与 AVB
+
+AVB 重签只改动系统校验链，不涉及基带校准与 IMEI / MEID 存储。改写 fstab、重算 hashtree、替换签名密钥都不会改变 NV 分区。
+
+- AVB 链覆盖 `boot`、`dtbo`、`vendor_boot`、`vendor`、`vbmeta_system` 与顶层 `vbmeta`。`vbmeta_vgc` 在部分版本中本身未签名，构建时保持原样。
+- IMEI / MEID 存放于 `persist`、`modemst1`、`modemst2`、`fsg`，部分平台还包括 `devinfo`。这些分区不在 OTA 包内，也不在 `flash-items-*.txt` 中；构建不生成，刷机脚本不写、不擦。
+- 清空数据只处理 `userdata`、`metadata`、`cache`、`frp`，`persist` 保持挂载。`fastboot -w` 同样不操作 NV 分区。
+- 基带固件为 `modem`（`NON-HLOS.bin`）及 `dsp`、`bluetooth`、`qupfw`，由高通 PIL 独立校验，与 AVB 链无关。解锁与 `verifiedbootstate=orange` 只改变信任链，不影响 NV。
+
+可能影响基带或 IMEI 的操作：
+
+1. **跨大版本只刷 Android 分区。** `flash.sh` 不写 bootloader 与 modem。A12 系统搭配 A15 的 abl / modem（或反之）时，RIL 可能读不到基带或 IMEI。A12 与 A15 之间切换应使用 `flash-full.sh`，同步写入 xbl、abl、tz、hyp 与 modem。
+2. **手动擦除 NV 分区。** 不要执行 `fastboot erase persist`、`modemst1`、`modemst2`、`fsg` 或 `devinfo`。擦除后 OTA 包无法恢复 IMEI，只能依赖完整字库或 NV 备份。
+3. **降级触发的修复流程。** vivo 可能在跨版本回退时进入额外修复或清数据流程。跨版本实验前应备份完整字库。
+
+诊断时注意：vivo 零售版对普通 `adb shell` 隐藏 IMEI，`getprop persist.radio.imei` 与 `ro.ril.oem.imei` 返回空并不表示 IMEI 丢失。应以系统设置中的“关于手机”或拨号 `*#06#` 为准。
+
 ## 常用选项
 
 | 选项 | 说明 |
