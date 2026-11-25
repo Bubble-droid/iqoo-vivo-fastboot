@@ -362,15 +362,28 @@ repair_oem() {
 # remaining data partitions are erased explicitly.  If `-w` is unsupported,
 # fall back to traditional `fastboot erase` calls.
 wipe_user_data() {
-    local ok=0 part
+    local ok=0 part out status=0
     local extras=(metadata frp)
     echo
     echo " -- Wiping data partitions (system partitions are kept)."
 
-    if fb -w; then
+    # fastbootd only exposes the logical partitions that live inside super.
+    # Wiping there reports "wipe task partition not found" for userdata,
+    # cache and metadata but still exits 0, so switch to the bootloader,
+    # which owns those physical partitions.
+    if fb getvar is-userspace 2>&1 | grep -qE 'is-userspace:[[:space:]]*yes'; then
+        echo " -- Rebooting from fastbootd to the bootloader for the wipe..."
+        fb reboot bootloader >/dev/null 2>&1 || true
+        wait_for_fastboot 60 || true
+    fi
+
+    out="$(fb -w 2>&1)" || status=$?
+    printf '%s\n' "$out"
+    if [ "$status" -eq 0 ] &&
+        ! printf '%s\n' "$out" | grep -q "partition not found"; then
         ok=1
     else
-        echo " -- fastboot -w unavailable; using fastboot erase instead." >&2
+        echo " -- fastboot -w could not wipe the data partitions; using fastboot erase instead." >&2
         extras=(metadata cache frp)
         if fb erase userdata; then
             ok=1

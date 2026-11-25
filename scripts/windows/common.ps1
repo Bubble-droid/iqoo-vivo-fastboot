@@ -462,15 +462,27 @@ function Clear-UserData {
     $ok = $false
     $extraParts = @('metadata', 'frp')
 
-    Invoke-Fastboot -Arguments @('-w')
-    if ($LASTEXITCODE -eq 0) {
+    # fastbootd only exposes the logical partitions that live inside super.
+    # Wiping there reports "wipe task partition not found" for userdata,
+    # cache and metadata but still exits 0, so switch to the bootloader,
+    # which owns those physical partitions.
+    $userspace = Get-FastbootResult -Arguments @('getvar', 'is-userspace')
+    if ($userspace.Text -match 'is-userspace:\s*yes') {
+        Write-Host ' -- Rebooting from fastbootd to the bootloader for the wipe...'
+        Invoke-Fastboot -Arguments @('reboot', 'bootloader') | Out-Null
+        Wait-ForFastboot 60 | Out-Null
+    }
+
+    $result = Get-FastbootResult -Arguments @('-w')
+    if ($result.Text) { Write-Host $result.Text }
+    if ($result.Code -eq 0 -and $result.Text -notmatch 'partition not found') {
         $ok = $true
     }
     else {
-        Write-Host ' -- fastboot -w unavailable; using fastboot erase instead.'
+        Write-Host ' -- fastboot -w could not wipe the data partitions; using fastboot erase instead.'
         $extraParts = @('metadata', 'cache', 'frp')
-        $result = Get-FastbootResult -Arguments @('erase', 'userdata')
-        if ($result.Code -eq 0) { $ok = $true }
+        $erase = Get-FastbootResult -Arguments @('erase', 'userdata')
+        if ($erase.Code -eq 0) { $ok = $true }
     }
 
     # `-w` does not cover all of these on every platform-tools release.
