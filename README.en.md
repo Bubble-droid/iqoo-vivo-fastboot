@@ -313,6 +313,24 @@ The patch keeps every file size unchanged by padding removed flags with spaces, 
 
 Pass `--keep-avb` at build time to keep the stock verification and encryption settings. The generated `package.env` records the final state in `AVB_STRIPPED` for reference; the image content is what matters.
 
+### Generating the AVB key
+
+AVB uses a 2048-bit RSA private key (`SHA256_RSA2048`). Generate it once and reuse it for every build; images signed with different keys cannot be mixed:
+
+```bash
+mkdir -p ~/.config/iqoo-vivo-fastboot
+chmod 700 ~/.config/iqoo-vivo-fastboot
+openssl genrsa -out ~/.config/iqoo-vivo-fastboot/avb.pem 2048
+chmod 600 ~/.config/iqoo-vivo-fastboot/avb.pem
+openssl rsa -in ~/.config/iqoo-vivo-fastboot/avb.pem -check -noout
+avbtool extract_public_key \
+    --key ~/.config/iqoo-vivo-fastboot/avb.pem \
+    --output ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
+sha1sum ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
+```
+
+Pass `--avb-key ~/.config/iqoo-vivo-fastboot/avb.pem` to the build. Never commit or share the private key: losing it means you cannot sign further updates for an already flashed custom system, and leaking it lets anyone sign system images for your device. After changing keys, reflash `boot`, `dtbo`, `vendor_boot`, `vbmeta_system`, `vbmeta_vgc`, `vbmeta` and `super` together.
+
 Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and `metadata`, then erase `frp`; older platform-tools fall back to traditional `fastboot erase userdata` calls. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
 
 ## Common options

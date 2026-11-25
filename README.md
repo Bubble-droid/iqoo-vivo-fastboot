@@ -313,6 +313,24 @@ OEM 修复：
 
 若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的 `AVB_STRIPPED` 仅用于记录最终状态，镜像内容本身才是依据。
 
+### 生成 AVB 密钥
+
+AVB 使用 2048 位 RSA 私钥（算法 `SHA256_RSA2048`）。密钥只需生成一次，之后所有构建都用同一把，否则新旧包不能混刷：
+
+```bash
+mkdir -p ~/.config/iqoo-vivo-fastboot
+chmod 700 ~/.config/iqoo-vivo-fastboot
+openssl genrsa -out ~/.config/iqoo-vivo-fastboot/avb.pem 2048
+chmod 600 ~/.config/iqoo-vivo-fastboot/avb.pem
+openssl rsa -in ~/.config/iqoo-vivo-fastboot/avb.pem -check -noout
+avbtool extract_public_key \
+    --key ~/.config/iqoo-vivo-fastboot/avb.pem \
+    --output ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
+sha1sum ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
+```
+
+构建时传 `--avb-key ~/.config/iqoo-vivo-fastboot/avb.pem`。私钥不要提交进仓库、不要外传；丢失后无法再给已刷入的自签系统追加签名，泄露则任何人都能给你的设备签系统镜像。换钥匙后必须把 `boot`、`dtbo`、`vendor_boot`、`vbmeta_system`、`vbmeta_vgc`、`vbmeta` 和 `super` 整套一起重刷。
+
 移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用 `fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 `frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
 ## 常用选项
