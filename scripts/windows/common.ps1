@@ -452,15 +452,16 @@ function Repair-Oem {
 # Wipe only the data partitions.  The boot chain, super, modem and OEM images
 # written above stay in place, so the installed system remains complete.
 #
-# Recent platform-tools treat `fastboot -w` as erase + format of userdata,
-# cache and metadata.  Older releases only erase part of that set, so the
-# remaining data partitions are erased explicitly.  If `-w` is unsupported,
-# fall back to traditional `fastboot erase` calls.
+# The default path uses `fastboot erase` only.  `fastboot -w` makes the host
+# build a f2fs image as large as the userdata partition and then sends it as a
+# sparse image; some vivo bootloaders (notably the A15 one) stall on that
+# transfer, leave a half-formatted filesystem behind and force a bootloop.
+# Android formats an empty userdata on first boot, so erasing is enough.
+# Set WIPE_WITH_FASTBOOT_W=1 to use the old `fastboot -w` path explicitly.
 function Clear-UserData {
     Write-Host ''
     Write-Host ' -- Wiping data partitions (system partitions are kept).'
     $ok = $false
-    $extraParts = @('metadata', 'frp')
 
     # fastbootd only exposes the logical partitions that live inside super.
     # Wiping there reports "wipe task partition not found" for userdata,
@@ -473,23 +474,28 @@ function Clear-UserData {
         Wait-ForFastboot 60 | Out-Null
     }
 
-    $result = Get-FastbootResult -Arguments @('-w')
-    if ($result.Text) { Write-Host $result.Text }
-    if ($result.Code -eq 0 -and $result.Text -notmatch 'partition not found') {
-        $ok = $true
+    if ($env:WIPE_WITH_FASTBOOT_W -eq '1') {
+        $result = Get-FastbootResult -Arguments @('-w')
+        if ($result.Text) { Write-Host $result.Text }
+        if ($result.Code -eq 0 -and $result.Text -notmatch 'partition not found') {
+            $ok = $true
+        }
+        else {
+            Write-Host ' -- fastboot -w could not wipe the data partitions; using fastboot erase instead.'
+            $erase = Get-FastbootResult -Arguments @('erase', 'userdata')
+            if ($erase.Code -eq 0) { $ok = $true }
+        }
     }
     else {
-        Write-Host ' -- fastboot -w could not wipe the data partitions; using fastboot erase instead.'
-        $extraParts = @('metadata', 'cache', 'frp')
         $erase = Get-FastbootResult -Arguments @('erase', 'userdata')
         if ($erase.Code -eq 0) { $ok = $true }
+        else { Write-Host ' -- note: could not erase userdata' }
     }
 
-    # `-w` does not cover all of these on every platform-tools release.
-    # `cache` is only erased in the fallback, so a modern `-w` keeps the
-    # filesystem it just formatted.  `misc` is left alone because it can
-    # carry the A/B slot suffix.
-    foreach ($part in $extraParts) {
+    # metadata stores encryption and update state; cache and frp are optional
+    # on newer layouts.  `misc` is left alone because it can carry the A/B
+    # slot suffix.
+    foreach ($part in @('metadata', 'cache', 'frp')) {
         $result = Get-FastbootResult -Arguments @('erase', $part)
         if ($result.Code -ne 0) {
             Write-Host " -- note: could not erase $part (absent on this device?)"

@@ -179,9 +179,12 @@ def render_package_readme(
             "`--disable-verity` / `--disable-verification`。若需要保留原厂校验，"
             "重新构建时加 `--keep-avb`。\n\n"
             "移除强制加密后，首次启动可能需要清空 `userdata`。刷机脚本在全部写入"
-            "完成、重启之前会询问是否清空数据（默认保留）：确认后优先用 "
-            "`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 "
-            "`frp`；旧版 platform-tools 回退为 `fastboot erase`。只清理"
+            "完成、重启之前会询问是否清空数据（默认保留）：确认后先用 "
+            "`fastboot erase userdata` 擦除数据分区，再补擦 `metadata`、`cache`、"
+            "`frp`；Android 首次开机会自行建立文件系统。旧版平台工具与部分 "
+            "bootloader 对 `fastboot -w` 的 sparse 写入会卡死或留下半格式化的 "
+            "`userdata`，因此不再默认使用；确需 `-w` 时设 "
+            "`WIPE_WITH_FASTBOOT_W=1`。只清理"
             "数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。"
         )
     else:
@@ -427,9 +430,11 @@ def render_build_md(
             "",
             "Removing force-encryption may require clearing `userdata`. After",
             "the writes the flash scripts ask whether to erase data (default:",
-            "keep); a confirmed wipe uses `fastboot -w` for `userdata`, `cache`",
-            "and `metadata`, then erases `frp`, falling back to",
-            "`fastboot erase` on older platform-tools. Only data partitions are",
+            "keep); a confirmed wipe calls `fastboot erase userdata` and then",
+            "`metadata`, `cache` and `frp`; Android creates the filesystem on",
+            "first boot. `fastboot -w` is no longer the default because some",
+            "bootloaders stall on its sparse userdata write; set",
+            "`WIPE_WITH_FASTBOOT_W=1` to opt in. Only data partitions are",
             "touched, so the system partitions stay as written.",
             "",
         ]

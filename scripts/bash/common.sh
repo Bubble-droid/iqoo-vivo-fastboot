@@ -357,13 +357,14 @@ repair_oem() {
 # Wipe only the data partitions.  The boot chain, super, modem and OEM images
 # written above stay in place, so the installed system remains complete.
 #
-# Recent platform-tools treat `fastboot -w` as erase + format of userdata,
-# cache and metadata.  Older releases only erase part of that set, so the
-# remaining data partitions are erased explicitly.  If `-w` is unsupported,
-# fall back to traditional `fastboot erase` calls.
+# The default path uses `fastboot erase` only.  `fastboot -w` makes the host
+# build a f2fs image as large as the userdata partition and then sends it as a
+# sparse image; some vivo bootloaders (notably the A15 one) stall on that
+# transfer, leave a half-formatted filesystem behind and force a bootloop.
+# Android formats an empty userdata on first boot, so erasing is enough.
+# Set WIPE_WITH_FASTBOOT_W=1 to use the old `fastboot -w` path explicitly.
 wipe_user_data() {
     local ok=0 part out status=0
-    local extras=(metadata frp)
     echo
     echo " -- Wiping data partitions (system partitions are kept)."
 
@@ -377,14 +378,21 @@ wipe_user_data() {
         wait_for_fastboot 60 || true
     fi
 
-    out="$(fb -w 2>&1)" || status=$?
-    printf '%s\n' "$out"
-    if [ "$status" -eq 0 ] &&
-        ! printf '%s\n' "$out" | grep -q "partition not found"; then
-        ok=1
+    if [ "${WIPE_WITH_FASTBOOT_W:-0}" = "1" ]; then
+        out="$(fb -w 2>&1)" || status=$?
+        printf '%s\n' "$out"
+        if [ "$status" -eq 0 ] &&
+            ! printf '%s\n' "$out" | grep -q "partition not found"; then
+            ok=1
+        else
+            echo " -- fastboot -w could not wipe the data partitions; using fastboot erase instead." >&2
+            if fb erase userdata; then
+                ok=1
+            else
+                echo " -- note: could not erase userdata" >&2
+            fi
+        fi
     else
-        echo " -- fastboot -w could not wipe the data partitions; using fastboot erase instead." >&2
-        extras=(metadata cache frp)
         if fb erase userdata; then
             ok=1
         else
@@ -392,11 +400,10 @@ wipe_user_data() {
         fi
     fi
 
-    # `-w` does not cover all of these on every platform-tools release.
-    # `cache` is only erased in the fallback, so a modern `-w` keeps the
-    # filesystem it just formatted.  `misc` is left alone because it can
-    # carry the A/B slot suffix.
-    for part in "${extras[@]}"; do
+    # metadata stores encryption and update state; cache and frp are optional
+    # on newer layouts.  `misc` is left alone because it can carry the A/B
+    # slot suffix.
+    for part in metadata cache frp; do
         if ! fb erase "$part" 2>/dev/null; then
             echo " -- note: could not erase $part (absent on this device?)"
         fi

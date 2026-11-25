@@ -331,7 +331,7 @@ sha1sum ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
 
 构建时传 `--avb-key ~/.config/iqoo-vivo-fastboot/avb.pem`。私钥不要提交进仓库、不要外传；丢失后无法再给已刷入的自签系统追加签名，泄露则任何人都能给你的设备签系统镜像。换钥匙后必须把 `boot`、`dtbo`、`vendor_boot`、`vbmeta_system`、`vbmeta_vgc`、`vbmeta` 和 `super` 整套一起重刷。
 
-移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用 `fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 `frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
+移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后改用 `fastboot erase userdata`，再补擦 `metadata`、`cache`、`frp`，Android 首次开机会自行建立文件系统。`fastboot -w` 不再默认使用：它会让主机生成与整个 userdata 等大的 f2fs 镜像再以 sparse 写入，部分 A15 bootloader 会在传输中卡死并留下半格式化的 userdata，导致 bootloop；确需时设 `WIPE_WITH_FASTBOOT_W=1`。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
 ## 常用选项
 

@@ -331,7 +331,7 @@ sha1sum ~/.config/iqoo-vivo-fastboot/avb.avbpubkey
 
 Pass `--avb-key ~/.config/iqoo-vivo-fastboot/avb.pem` to the build. Never commit or share the private key: losing it means you cannot sign further updates for an already flashed custom system, and leaking it lets anyone sign system images for your device. After changing keys, reflash `boot`, `dtbo`, `vendor_boot`, `vbmeta_system`, `vbmeta_vgc`, `vbmeta` and `super` together.
 
-Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they use `fastboot -w` to erase and format `userdata`, `cache` and `metadata`, then erase `frp`; older platform-tools fall back to traditional `fastboot erase userdata` calls. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
+Removing force-encryption can make an already encrypted `userdata` partition unbootable until it is cleared. After all writes and before the automatic reboot, the flash scripts ask whether to erase data (default: keep). When confirmed they call `fastboot erase userdata`, then erase `metadata`, `cache` and `frp`; Android creates the filesystem on first boot. `fastboot -w` is no longer the default: it makes the host build a f2fs image as large as the whole userdata partition and flashes it sparse, and some A15 bootloaders stall during that transfer and leave a half-formatted userdata behind, causing a bootloop. Set `WIPE_WITH_FASTBOOT_W=1` to opt in. Only data partitions are touched, so the freshly written system, boot, vendor, super, modem and OEM partitions stay intact.
 
 ## Common options
 
