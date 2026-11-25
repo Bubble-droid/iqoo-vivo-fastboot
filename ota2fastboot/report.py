@@ -165,16 +165,19 @@ def render_package_readme(
     if avb_stripped:
         avb_note = (
             "## AVB 与强制加密\n\n"
-            "本包在构建时移除了 fstab 中的 AVB / dm-verity / 强制加密标记：\n\n"
-            "- `boot.img` 与 `vendor_boot.img` 的 `fstab.qcom`\n"
-            "- `vendor.img` 的 `/etc/fstab.qcom`；ext4 与 EROFS 均自动识别\n"
-            "- 移除的标记包括 `avb=...`、`avb_keys=...`、`verify`、`vverify`、"
-            "`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、"
-            "`keepverity`、`keepforceencrypt` 等\n\n"
-            "`vbmeta*` 的“禁止校验”标记已在构建时写入镜像，刷机脚本按普通镜像"
-            "直接写入，不再给 fastboot 附加 `--disable-verity` / "
-            "`--disable-verification`。若需要保留原厂校验，重新构建时加 "
-            "`--keep-avb`。\n\n"
+            "本包保留 dm-verity，并以构建时指定的自建 AVB 密钥重签整条校验链：\n\n"
+            "- `boot.img`、`dtbo.img`：内容不变，仅重签 vbmeta 尾部\n"
+            "- `vendor_boot.img`：移除 `fileencryption=`、`keydirectory=`、"
+            "`metadata_encryption=` 等强制加密标记后，重算 hash footer\n"
+            "- `vendor.img`：移除 `/etc/fstab.qcom` 的强制加密标记，重算 hashtree，"
+            "并重建 `vbmeta_system`\n"
+            "- `vbmeta_system`、`vbmeta_vgc`、`vbmeta`：以自建密钥重签，flags 保持 0\n\n"
+            "本机 bootloader 拒绝 AVB 的 disable-verity / disable-verification 标记"
+            "（flags=1 与 flags=3 均失败），因此 `avb=` 与 dm-verity 必须保留；"
+            "修改过的分区会以自建密钥重算 hashtree，verity 仍会校验本包内容。"
+            "刷机脚本按普通镜像直接写入 `vbmeta*`，不再给 fastboot 附加 "
+            "`--disable-verity` / `--disable-verification`。若需要保留原厂校验，"
+            "重新构建时加 `--keep-avb`。\n\n"
             "移除强制加密后，首次启动可能需要清空 `userdata`。刷机脚本在全部写入"
             "完成、重启之前会询问是否清空数据（默认保留）：确认后优先用 "
             "`fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 "
@@ -377,45 +380,51 @@ def render_build_md(
     lines += ["", "## AVB / verity / force-encryption", ""]
     if avb_stripped:
         lines += [
-            "The build removed AVB, dm-verity and force-encryption flags from the",
-            "fstab files inside `boot.img`, `vendor_boot.img` and `vendor.img`.",
-            "The vendor file system is detected automatically (ext4 or EROFS).",
-            "Removed text is padded with spaces, so every file keeps its original",
-            "size. Every `vbmeta*` image already carries the disable-verity and",
-            "disable-verification flags, so the flash scripts write them without",
-            "extra fastboot options.",
+            "dm-verity stays enabled, but the whole AVB chain is re-signed with a",
+            "build-time custom key. `boot.img` and `dtbo.img` keep their content",
+            "and only get a new vbmeta footer; `vendor_boot.img` and `vendor.img`",
+            "lose the force-encryption flags and get a freshly computed hash",
+            "footer / hashtree. `vbmeta_system`, `vbmeta_vgc` and the top-level",
+            "`vbmeta` are re-signed with the same key, with `flags` kept at 0.",
             "",
         ]
         patch = avb_patch or {}
-        if patch:
-            lines += [
-                "| image | patched entries | flags removed |",
-                "|-------|-----------------|---------------|",
-            ]
-            for name in ("boot", "vendor_boot", "vendor"):
-                entry = patch.get(name)
-                if not entry:
-                    lines.append(f"| `{name}.img` | none | 0 |")
-                    continue
-                entries = ", ".join(f"`{item}`" for item in entry.get("entries", []))
-                lines.append(
-                    f"| `{name}.img` | {entries} | {len(entry.get('flags', []))} |"
+        rows = []
+        for name in ("boot", "vendor_boot", "vendor"):
+            entry = patch.get(name)
+            if not entry:
+                continue
+            if entry.get("entries"):
+                entries = ", ".join(f"`{item}`" for item in entry["entries"])
+                rows.append(
+                    f"| `{name}.img` | {entries} | "
+                    f"{len(entry.get('flags', []))} |"
                 )
-            lines.append("")
-            vbmeta = patch.get("vbmeta") or {}
-            if vbmeta:
-                lines += [
-                    "| vbmeta image | flags before | flags after |",
-                    "|--------------|--------------|-------------|",
-                ]
-                for name in sorted(vbmeta):
-                    entry = vbmeta[name]
-                    lines.append(
-                        f"| `{name}` | 0x{entry['flags_before']:x} | "
-                        f"0x{entry['flags_after']:x} |"
-                    )
-                lines.append("")
+            else:
+                rows.append(f"| `{name}.img` | (content preserved) | 0 |")
+        if rows:
+            lines += [
+                "| image | fstab entries patched | encryption flags removed |",
+                "|-------|-----------------------|--------------------------|",
+                *rows,
+                "",
+            ]
+        vbmeta = patch.get("vbmeta") or {}
+        if vbmeta:
+            signed = ", ".join(f"`{name}`" for name in vbmeta.get("signed", []))
+            if signed:
+                lines += [f"Re-signed with the custom key: {signed}.", ""]
+            if vbmeta.get("key"):
+                lines += [f"Public key: `{vbmeta['key']}`.", ""]
+            if vbmeta.get("verified") is not None:
+                state = "verified" if vbmeta["verified"] else "did not verify"
+                lines += [f"Local `avbtool verify_image` run: {state}.", ""]
         lines += [
+            "Because the AVB disable flags are rejected by this bootloader, the",
+            "`avb=` and `verify`/`vverify` markers are kept and `vbmeta*` images",
+            "are flashed unmodified by the scripts. Boot loader verification",
+            "still runs, against the custom key and the recomputed digests.",
+            "",
             "Removing force-encryption may require clearing `userdata`. After",
             "the writes the flash scripts ask whether to erase data (default:",
             "keep); a confirmed wipe uses `fastboot -w` for `userdata`, `cache`",

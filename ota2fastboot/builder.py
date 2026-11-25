@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .avb import patch_images, patch_vbmeta_flags
+from .avb import patch_images, resign_chain
 from .constants import BLOCK, DEFAULT_DEVICE_SIZE, SUPER_GROUP
 from .device import (
     DeviceInfo,
@@ -80,6 +80,8 @@ def build(args: argparse.Namespace) -> int:
     log.add_redaction(package, "<ota>")
     log.add_redaction(REPO_ROOT, "<repo>")
     log.add_redaction(scripts_dir, "<scripts>")
+    if getattr(args, "avb_key", None):
+        log.add_redaction(str(args.avb_key), "<avb-key>")
 
     try:
         return _run(args, package, out, display_out, scripts_dir, log)
@@ -460,7 +462,7 @@ def verify_chain(
         return {}
 
     if not getattr(args, "keep_avb", False):
-        log("  checking the unmodified OTA images; AVB is stripped afterwards")
+        log("  checking the unmodified OTA images; the chain is re-signed afterwards")
     results = verify_avb(out, avb_files, avb_targets, log)
     failed = [name for name, ok in results.items() if not ok]
     if failed:
@@ -704,8 +706,14 @@ def _run(
         )
     )
     log(
-        "AVB / verity / force-encryption removal: "
-        + ("disabled (--keep-avb)" if args.keep_avb else "enabled")
+        "AVB: "
+        + (
+            "stock (--keep-avb)"
+            if args.keep_avb
+            else f"custom key ({args.avb_key})"
+        )
+        + "; force-encryption removal: "
+        + ("disabled" if args.keep_avb else "enabled")
     )
 
     data_bytes = sum(plan.sizes.values())
@@ -760,13 +768,25 @@ def _run(
     )
 
     avb_stripped = not getattr(args, "keep_avb", False)
+    avb_key = getattr(args, "avb_key", None)
     avb_patch: dict = {}
-    log("=== AVB / verity / force-encryption removal ===")
+    log("=== AVB / verity / force-encryption ===")
     if avb_stripped:
+        if not avb_key:
+            raise ToolError(
+                "this device rejects the AVB disable flags (flags=1 and "
+                "flags=3 both fail); pass --avb-key KEY.pem to re-sign the "
+                "chain with a custom key, or --keep-avb to keep stock AVB"
+            )
+        log(f"  custom key: {avb_key}")
         avb_patch = patch_images(
-            out_fw, raw_parts, log, include_vendor=not args.no_super
+            out_fw,
+            raw_parts,
+            log,
+            include_vendor=not args.no_super,
+            include_boot=False,
+            remove_verity=False,
         )
-        avb_patch["vbmeta"] = patch_vbmeta_flags(out_fw, log)
         patched_ext4 = {
             name: raw_parts[name]
             for name, report in avb_patch.items()
@@ -780,6 +800,19 @@ def _run(
                 raise ToolError(
                     "patched image failed e2fsck: " + ", ".join(failed)
                 )
+        modified = {
+            name
+            for name, report in avb_patch.items()
+            if report and name in raw_parts
+        }
+        avb_patch["vbmeta"] = resign_chain(
+            out_fw,
+            raw_parts,
+            plan.sizes,
+            Path(avb_key),
+            log,
+            modified=modified,
+        )
     else:
         log("  skipped (--keep-avb)")
 

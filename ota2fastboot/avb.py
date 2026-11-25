@@ -1,28 +1,25 @@
-"""Strip AVB, dm-verity and force-encryption flags from package images.
+"""Keep dm-verity and re-sign the AVB chain with a custom key.
 
-The generated package is meant to run with the bootloader verification
-disabled.  The build therefore removes the fstab flags that ask Android to
-verify partitions or to force encryption, and sets the disable-verity /
-disable-verification bits in every ``vbmeta*`` header.  The flash scripts
-write the already patched ``vbmeta*`` images without any fastboot options.
+This device's bootloader rejects the AVB disable flags: fstab ``avb=`` cannot
+be removed, and both ``flags=1`` and ``flags=3`` fall back to fastboot.  The
+build therefore keeps ``flags=0``, removes only the force-encryption flags
+from the fstab files, recomputes the hash / hashtree footers of the modified
+images, and re-signs the whole chain with the private key given by the
+caller.
 
-Three image groups are patched in place:
+Three image groups are handled in place:
 
-* ``boot.img`` / ``vendor_boot.img``: the newc cpio inside the LZ4 legacy
-  ramdisk frame;
-* ``vendor.img``: the file system, rewriting the compressed EROFS inode or
-  the ext4 data blocks of ``/etc/fstab.qcom``.  Both formats are detected at
-  build time, so Android 12 (ext4) and Android 15 (EROFS) work unchanged;
-* ``vbmeta*.img``: the AVB header flags, the same two bits that
-  ``fastboot --disable-verity --disable-verification`` would set.
+* ``boot.img`` / ``dtbo.img``: content untouched, vbmeta footer re-signed
+  (a modified boot ramdisk would invalidate the boot header v4 signature);
+* ``vendor_boot.img`` / ``vendor.img``: the newc cpio inside the LZ4 legacy
+  ramdisk, or the file system (ext4 data blocks / compressed EROFS inode),
+  is patched, then a new hash footer / dm-verity hashtree is computed;
+* ``vbmeta_system`` / ``vbmeta_vgc`` / ``vbmeta``: rebuilt or re-signed with
+  the custom key; the top-level chain descriptors keep the original rollback
+  slots and only swap in the new public key for partitions we re-signed.
 
-Patching the vbmeta flags at build time avoids a platform-tools failure:
-some fastboot builds read the whole image while relocating a missing AVB
-footer and then fail to rewrite a vbmeta image that is smaller than its
-partition (``Failed to find AVB_MAGIC at offset: 0``).
-
-The patch keeps every file size unchanged.  Removed flags are replaced by
-spaces on the same line, so the cpio member size and the EROFS inode size
+The fstab patch keeps every file size unchanged.  Removed flags are replaced
+by spaces on the same line, so the cpio member size and the EROFS inode size
 stay valid and no metadata has to be recomputed.
 """
 
@@ -31,7 +28,10 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import re
+import shutil
 import struct
+import subprocess
+import tempfile
 from pathlib import Path
 
 from .errors import ToolError
@@ -63,6 +63,27 @@ REMOVE_EXACT = frozenset(
 REMOVE_PREFIX = (
     "avb=",
     "avb_keys=",
+    "fileencryption=",
+    "forceencrypt=",
+    "forcefdeorfbe=",
+    "keydirectory=",
+    "metadata_encryption=",
+)
+
+# When AVB is kept (custom-key re-signing) only the encryption flags may be
+# removed: dropping ``avb=`` makes first-stage init fail to mount the logical
+# partitions, which the bootloader turns into a fastboot reboot.
+ENCRYPT_EXACT = frozenset(
+    {
+        "forceencrypt",
+        "forcefdeorfbe",
+        "fileencryption",
+        "keydirectory",
+        "metadata_encryption",
+        "keepforceencrypt",
+    }
+)
+ENCRYPT_PREFIX = (
     "fileencryption=",
     "forceencrypt=",
     "forcefdeorfbe=",
@@ -188,15 +209,26 @@ def _round_up(value: int, align: int) -> int:
     return (value + align - 1) // align * align
 
 
-def strip_fstab_flags(data: bytes) -> tuple[bytes, list[str]]:
+def strip_fstab_flags(
+    data: bytes, remove_verity: bool = True
+) -> tuple[bytes, list[str]]:
     """Remove AVB/verity/encryption flags while preserving the file length.
 
     Only the fifth fstab field (the fs_mgr flags) is edited.  The removed
     text is replaced with spaces on the same line, so the returned buffer
     always has the same size as *data*.  This keeps cpio member sizes and
     EROFS inode sizes unchanged.
+
+    With *remove_verity* false only the force-encryption flags are removed.
+    This is the mode used when the images are re-signed with a custom AVB
+    key: the ``avb=``/``verify`` flags must stay or first-stage init cannot
+    mount the logical partitions.
     """
 
+    if remove_verity:
+        exact, prefix = REMOVE_EXACT, REMOVE_PREFIX
+    else:
+        exact, prefix = ENCRYPT_EXACT, ENCRYPT_PREFIX
     text = data.decode("utf-8", "surrogateescape")
     output: list[str] = []
     removed: list[str] = []
@@ -223,7 +255,7 @@ def strip_fstab_flags(data: bytes) -> tuple[bytes, list[str]]:
         flags = match.group(10).split(",")
         kept: list[str] = []
         for flag in flags:
-            if flag in REMOVE_EXACT or flag.startswith(REMOVE_PREFIX):
+            if flag in exact or flag.startswith(prefix):
                 removed.append(flag)
             else:
                 kept.append(flag)
@@ -349,7 +381,9 @@ def _vendor_boot_table_entry(image: bytes, old_size: int) -> int | None:
     return entries[0][0]
 
 
-def _patch_cpio(plain: bytearray, removed: list[str]) -> list[str]:
+def _patch_cpio(
+    plain: bytearray, removed: list[str], remove_verity: bool = True
+) -> list[str]:
     """Patch every ``fstab.qcom`` member in a newc cpio archive in place."""
 
     position = 0
@@ -378,7 +412,7 @@ def _patch_cpio(plain: bytearray, removed: list[str]) -> list[str]:
         is_regular = (mode & 0o170000) == 0o100000
         is_fstab = basename == b"fstab" or basename.startswith(b"fstab.")
         if is_fstab and is_regular and file_size:
-            patched, flags = strip_fstab_flags(body)
+            patched, flags = strip_fstab_flags(body, remove_verity)
             if flags:
                 plain[body_start : body_start + file_size] = patched
                 changed.append(name.decode("utf-8", "replace"))
@@ -388,7 +422,9 @@ def _patch_cpio(plain: bytearray, removed: list[str]) -> list[str]:
     return changed
 
 
-def patch_ramdisk_image(path: Path, log: Log) -> dict | None:
+def patch_ramdisk_image(
+    path: Path, log: Log, remove_verity: bool = True
+) -> dict | None:
     """Patch ``boot.img`` or ``vendor_boot.img`` in place."""
 
     image = path.read_bytes()
@@ -409,7 +445,7 @@ def patch_ramdisk_image(path: Path, log: Log) -> dict | None:
     plain = bytearray(b"".join(plains))
 
     removed: list[str] = []
-    changed = _patch_cpio(plain, removed)
+    changed = _patch_cpio(plain, removed, remove_verity)
     if not changed:
         log(f"  {path.name}: no fstab flags to remove")
         return None
@@ -1049,7 +1085,9 @@ class Ext4Image:
         return ino
 
 
-def patch_ext4_image(path: Path, log: Log) -> dict | None:
+def patch_ext4_image(
+    path: Path, log: Log, remove_verity: bool = True
+) -> dict | None:
     """Patch the ``/etc/fstab.*`` files inside an ext4 vendor image."""
 
     try:
@@ -1073,11 +1111,11 @@ def patch_ext4_image(path: Path, log: Log) -> dict | None:
             if (inode["mode"] & 0xF000) != 0x8000:
                 continue
             data = image.read_data(inode)
-            patched, flags = strip_fstab_flags(data)
+            patched, flags = strip_fstab_flags(data, remove_verity)
             if not flags:
                 continue
             image.write_data(inode, patched)
-            _, remaining = strip_fstab_flags(image.read_data(inode))
+            _, remaining = strip_fstab_flags(image.read_data(inode), remove_verity)
             if remaining:
                 raise ToolError(
                     f"{path.name}: /etc/{name} still has removable flags"
@@ -1102,7 +1140,9 @@ def patch_ext4_image(path: Path, log: Log) -> dict | None:
     }
 
 
-def patch_erofs_image(path: Path, log: Log) -> dict | None:
+def patch_erofs_image(
+    path: Path, log: Log, remove_verity: bool = True
+) -> dict | None:
     """Patch the ``/etc/fstab.*`` files inside an EROFS vendor image."""
 
     try:
@@ -1124,7 +1164,7 @@ def patch_erofs_image(path: Path, log: Log) -> dict | None:
                 continue
             inode = image.inode(nid)
             data = image.read_data(inode)
-            patched, flags = strip_fstab_flags(data)
+            patched, flags = strip_fstab_flags(data, remove_verity)
             if not flags:
                 continue
             image.write_data(inode, patched)
@@ -1165,46 +1205,6 @@ def _vendor_filesystem(path: Path) -> str | None:
 
 
 AVB_MAGIC = b"AVB0"
-AVB_FLAGS_OFFSET = 120
-AVB_DISABLE_VERITY = 0x1
-AVB_DISABLE_VERIFICATION = 0x2
-
-_REMOVE_FLAGS = AVB_DISABLE_VERITY | AVB_DISABLE_VERIFICATION
-
-
-def patch_vbmeta_image(path: Path, log: Log) -> dict:
-    """Set the disable-verity / disable-verification bits in a vbmeta image."""
-
-    data = bytearray(path.read_bytes())
-    if len(data) < AVB_FLAGS_OFFSET + 4:
-        raise ToolError(f"{path.name}: too small to be an AVB image")
-    if bytes(data[:4]) != AVB_MAGIC:
-        raise ToolError(
-            f"{path.name}: not a raw AVB vbmeta image "
-            f"(magic {bytes(data[:4])!r}); rebuild with --keep-avb if unexpected"
-        )
-
-    before = int.from_bytes(data[AVB_FLAGS_OFFSET : AVB_FLAGS_OFFSET + 4], "big")
-    after = before | _REMOVE_FLAGS
-    # AVB stores the flags as a big-endian uint32; bits 0 and 1 live in the
-    # last byte, which is also the only byte that can change for these flags.
-    data[AVB_FLAGS_OFFSET + 3] |= _REMOVE_FLAGS
-    if after != before:
-        path.write_bytes(data)
-    log(f"  {path.name}: vbmeta flags 0x{before:x} -> 0x{after:x}")
-    return {"flags_before": before, "flags_after": after}
-
-
-def patch_vbmeta_flags(out_fw: Path, log: Log) -> dict[str, dict]:
-    """Patch every vbmeta image in the package, including OEM variants."""
-
-    report: dict[str, dict] = {}
-    for path in sorted(out_fw.rglob("vbmeta*.img")):
-        key = path.relative_to(out_fw).as_posix()
-        report[key] = patch_vbmeta_image(path, log)
-    if not report:
-        raise ToolError("no vbmeta image found to patch")
-    return report
 
 
 def patch_images(
@@ -1212,17 +1212,27 @@ def patch_images(
     raw_parts: dict[str, Path],
     log: Log,
     include_vendor: bool = True,
+    include_boot: bool = True,
+    remove_verity: bool = True,
 ) -> dict[str, dict | None]:
-    """Patch boot, vendor_boot and vendor.  Returns a report per image."""
+    """Patch boot, vendor_boot and vendor.  Returns a report per image.
+
+    With *remove_verity* false only the force-encryption flags are removed,
+    for builds that keep AVB and re-sign the chain with a custom key.
+    """
 
     report: dict[str, dict | None] = {}
     for name in ("boot", "vendor_boot"):
+        if name == "boot" and not include_boot:
+            log("  boot.img: left untouched (custom-key build)")
+            report[name] = None
+            continue
         path = out_fw / f"{name}.img"
         if not path.is_file():
             log(f"  {name}.img: not present")
             report[name] = None
             continue
-        report[name] = patch_ramdisk_image(path, log)
+        report[name] = patch_ramdisk_image(path, log, remove_verity)
     if include_vendor:
         vendor = raw_parts.get("vendor")
         if vendor is None or not vendor.is_file():
@@ -1231,9 +1241,9 @@ def patch_images(
         else:
             filesystem = _vendor_filesystem(vendor)
             if filesystem == "ext4":
-                report["vendor"] = patch_ext4_image(vendor, log)
+                report["vendor"] = patch_ext4_image(vendor, log, remove_verity)
             elif filesystem == "erofs":
-                report["vendor"] = patch_erofs_image(vendor, log)
+                report["vendor"] = patch_erofs_image(vendor, log, remove_verity)
             else:
                 raise ToolError(
                     f"{vendor.name}: unsupported file system for fstab "
@@ -1242,4 +1252,387 @@ def patch_images(
     else:
         log("  vendor.img: skipped (--no-super)")
         report["vendor"] = None
+    return report
+
+
+# ---------------------------------------------------------------------------
+# Custom AVB key re-signing
+# ---------------------------------------------------------------------------
+
+AVB_DEFAULT_SALT = (
+    "aee087a5be3b982978c923f566a94613496b417f2af592639bc80d141e34dfe7"
+)
+AVB_DESCRIPTOR_TAG_HASHTREE = 1
+AVB_DESCRIPTOR_TAG_HASH = 2
+AVB_DESCRIPTOR_TAG_CHAIN = 4
+AVB_ALGORITHM = "SHA256_RSA2048"
+
+
+def _avbtool(args: list[str], log: Log) -> str:
+    """Run ``avbtool`` and return its stdout, raising on failure."""
+
+    if shutil.which("avbtool") is None:
+        raise ToolError(
+            "avbtool not found; install android-sdk-libsparse-utils or rebuild "
+            "with --keep-avb"
+        )
+    result = subprocess.run(
+        ["avbtool", *args],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise ToolError(
+            f"avbtool {args[0]} failed: {detail[-1500:] or 'no output'}"
+        )
+    if result.stdout.strip():
+        log.raw(result.stdout.rstrip())
+    return result.stdout
+
+
+def _be32(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 4], "big")
+
+
+def _be64(data: bytes, offset: int) -> int:
+    return int.from_bytes(data[offset : offset + 8], "big")
+
+
+def _vbmeta_header(data: bytes) -> dict:
+    """Return the fields of an AVB vbmeta header (all big-endian)."""
+
+    if len(data) < 256 or data[:4] != AVB_MAGIC:
+        raise ToolError("not an AVB vbmeta image")
+    return {
+        "auth_size": _be64(data, 12),
+        "aux_size": _be64(data, 20),
+        "rollback_index": _be64(data, 112),
+        "flags": _be32(data, 120),
+        "rollback_index_location": _be32(data, 124),
+        "descriptors_offset": _be64(data, 96),
+        "descriptors_size": _be64(data, 104),
+    }
+
+
+def _vbmeta_descriptors(data: bytes) -> list[dict]:
+    """Parse the descriptors of an AVB vbmeta image.
+
+    Only chain, hash and hashtree descriptors are decoded; every descriptor
+    is returned with its tag and partition name so the caller can rebuild a
+    chained image without losing unknown entries.
+    """
+
+    header = _vbmeta_header(data)
+    base = 256 + header["auth_size"] + header["descriptors_offset"]
+    end = base + header["descriptors_size"]
+    if end > len(data):
+        raise ToolError("truncated vbmeta descriptor block")
+    result: list[dict] = []
+    position = base
+    while position + 16 <= end:
+        tag = _be64(data, position)
+        following = _be64(data, position + 8)
+        body = position + 16
+        descriptor: dict = {"tag": tag, "raw": data[position : body + following]}
+        if tag == AVB_DESCRIPTOR_TAG_CHAIN:
+            name_len = _be32(data, body + 4)
+            key_len = _be32(data, body + 8)
+            name_start = body + 76
+            key_start = name_start + name_len
+            descriptor.update(
+                {
+                    "partition_name": data[name_start : name_start + name_len].decode(
+                        "utf-8", "replace"
+                    ),
+                    "rollback_index_location": _be32(data, body),
+                    "public_key": data[key_start : key_start + key_len],
+                    "flags": _be32(data, body + 12),
+                }
+            )
+        elif tag == AVB_DESCRIPTOR_TAG_HASHTREE:
+            name_len = _be32(data, body + 88)
+            descriptor.update(
+                {
+                    "partition_name": data[
+                        body + 164 : body + 164 + name_len
+                    ].decode("utf-8", "replace"),
+                }
+            )
+        elif tag == AVB_DESCRIPTOR_TAG_HASH:
+            name_len = _be32(data, body + 40)
+            descriptor.update(
+                {
+                    "partition_name": data[
+                        body + 116 : body + 116 + name_len
+                    ].decode("utf-8", "replace"),
+                }
+            )
+        result.append(descriptor)
+        position = body + following
+    return result
+
+
+def _partition_size(path: Path, sizes: dict[str, int] | None, name: str) -> int:
+    if sizes and name in sizes:
+        return sizes[name]
+    return path.stat().st_size
+
+
+def _resign_image(path: Path, key: Path, log: Log) -> None:
+    log(f"  {path.name}: re-signing with the custom key")
+    _avbtool(
+        [
+            "resign_image",
+            "--image",
+            str(path),
+            "--key",
+            str(key),
+            "--algorithm",
+            AVB_ALGORITHM,
+        ],
+        log,
+    )
+
+
+def _resign_hash_image(
+    path: Path, name: str, partition_size: int, key: Path, log: Log
+) -> None:
+    """Recompute the hash footer of a boot/dtbo style image."""
+
+    log(f"  {path.name}: recomputing hash footer")
+    _avbtool(["erase_footer", "--image", str(path)], log)
+    _avbtool(
+        [
+            "add_hash_footer",
+            "--image",
+            str(path),
+            "--partition_name",
+            name,
+            "--partition_size",
+            str(partition_size),
+            "--hash_algorithm",
+            "sha256",
+            "--salt",
+            AVB_DEFAULT_SALT,
+            "--key",
+            str(key),
+            "--algorithm",
+            AVB_ALGORITHM,
+        ],
+        log,
+    )
+
+
+def _resign_hashtree_image(
+    path: Path, name: str, partition_size: int, key: Path, log: Log
+) -> None:
+    """Recompute the dm-verity hashtree of a modified logical partition."""
+
+    log(f"  {path.name}: recomputing hashtree")
+    _avbtool(["erase_footer", "--image", str(path)], log)
+    _avbtool(
+        [
+            "add_hashtree_footer",
+            "--image",
+            str(path),
+            "--partition_name",
+            name,
+            "--partition_size",
+            str(partition_size),
+            "--hash_algorithm",
+            "sha256",
+            "--salt",
+            AVB_DEFAULT_SALT,
+            "--do_not_generate_fec",
+            "--key",
+            str(key),
+            "--algorithm",
+            AVB_ALGORITHM,
+        ],
+        log,
+    )
+
+
+def resign_chain(
+    out_fw: Path,
+    raw_parts: dict[str, Path],
+    sizes: dict[str, int] | None,
+    key: Path,
+    log: Log,
+    modified: set[str] | None = None,
+) -> dict:
+    """Re-sign the AVB chain with *key*, keeping verity enabled.
+
+    The bootloader of this device rejects the AVB disable flags, so the only
+    way to boot modified images is to keep ``flags=0`` and sign every piece
+    with a key the bootloader accepts.  ``boot``/``dtbo`` keep their content
+    and are only re-signed (this preserves the boot header v4 signature);
+    ``vendor_boot`` and the modified logical partitions get new hash or
+    hashtree footers with correct digests.
+    """
+
+    key = key.resolve()
+    if not key.is_file():
+        raise ToolError(f"AVB key not found: {key}")
+    out = out_fw.parent
+    avb_dir = out / "avb"
+    avb_dir.mkdir(exist_ok=True)
+    public_key = avb_dir / "custom.avbpubkey"
+    _avbtool(
+        [
+            "extract_public_key",
+            "--key",
+            str(key),
+            "--output",
+            str(public_key),
+        ],
+        log,
+    )
+
+    modified = set(modified or ())
+    report: dict[str, object] = {
+        "key": public_key.relative_to(out).as_posix(),
+        "signed": [],
+    }
+
+    # Physical images.
+    for name in ("boot", "dtbo"):
+        path = out_fw / f"{name}.img"
+        if not path.is_file():
+            continue
+        _resign_image(path, key, log)
+        report["signed"].append(name)  # type: ignore[union-attr]
+    vendor_boot = out_fw / "vendor_boot.img"
+    if vendor_boot.is_file():
+        size = _partition_size(vendor_boot, sizes, "vendor_boot")
+        _resign_hash_image(vendor_boot, "vendor_boot", size, key, log)
+        report["signed"].append("vendor_boot")  # type: ignore[union-attr]
+
+    # Logical partitions whose content changed need a fresh hashtree.
+    for name in sorted(modified):
+        path = raw_parts.get(name)
+        if path is None or not path.is_file():
+            continue
+        size = _partition_size(path, sizes, name)
+        _resign_hashtree_image(path, name, size, key, log)
+        report["signed"].append(name)  # type: ignore[union-attr]
+
+    # vbmeta_system: rebuild from the partition images when one changed,
+    # otherwise the original descriptors can simply be re-signed.
+    vbmeta_system = out_fw / "vbmeta_system.img"
+    if vbmeta_system.is_file():
+        original = _vbmeta_descriptors(vbmeta_system.read_bytes())
+        names = [
+            descriptor["partition_name"]
+            for descriptor in original
+            if descriptor["tag"] in (AVB_DESCRIPTOR_TAG_HASHTREE, AVB_DESCRIPTOR_TAG_HASH)
+        ]
+        if modified & set(names):
+            args = [
+                "make_vbmeta_image",
+                "--output",
+                str(vbmeta_system),
+                "--flags",
+                "0",
+                "--key",
+                str(key),
+                "--algorithm",
+                AVB_ALGORITHM,
+                "--padding_size",
+                "4096",
+            ]
+            for name in names:
+                path = raw_parts.get(name)
+                if path is None or not path.is_file():
+                    raise ToolError(
+                        f"cannot rebuild vbmeta_system: {name} image missing"
+                    )
+                args.extend(["--include_descriptors_from_image", str(path)])
+            log("  vbmeta_system.img: rebuilding descriptors with the custom key")
+            _avbtool(args, log)
+        else:
+            _resign_image(vbmeta_system, key, log)
+        report["signed"].append("vbmeta_system")  # type: ignore[union-attr]
+
+    vbmeta_vgc = out_fw / "vbmeta_vgc.img"
+    if vbmeta_vgc.is_file():
+        _resign_image(vbmeta_vgc, key, log)
+        report["signed"].append("vbmeta_vgc")  # type: ignore[union-attr]
+
+    # Top-level vbmeta: keep the same chain slots, replace the public keys of
+    # every partition we re-signed with our own.
+    vbmeta = out_fw / "vbmeta.img"
+    if not vbmeta.is_file():
+        raise ToolError("vbmeta.img not found")
+    stock = vbmeta.read_bytes()
+    header = _vbmeta_header(stock)
+    chains = [
+        descriptor
+        for descriptor in _vbmeta_descriptors(stock)
+        if descriptor["tag"] == AVB_DESCRIPTOR_TAG_CHAIN
+    ]
+    if not chains:
+        raise ToolError("vbmeta.img has no chain descriptors")
+    with tempfile.TemporaryDirectory(prefix="avb-keys-", dir=str(out)) as tmp:
+        args = [
+            "make_vbmeta_image",
+            "--output",
+            str(vbmeta),
+            "--flags",
+            str(header["flags"]),
+            "--rollback_index",
+            str(header["rollback_index"]),
+            "--rollback_index_location",
+            str(header["rollback_index_location"]),
+            "--key",
+            str(key),
+            "--algorithm",
+            AVB_ALGORITHM,
+            "--padding_size",
+            "4096",
+        ]
+        for descriptor in chains:
+            name = descriptor["partition_name"]
+            rollback = descriptor["rollback_index_location"]
+            if name in report["signed"]:  # type: ignore[operator]
+                key_path = public_key
+            else:
+                key_path = Path(tmp) / f"{name}.avbpubkey"
+                key_path.write_bytes(descriptor["public_key"])
+            args.extend(
+                ["--chain_partition", f"{name}:{rollback}:{key_path}"]
+            )
+        log("  vbmeta.img: rebuilding chain descriptors with the custom key")
+        _avbtool(args, log)
+    report["chained"] = [descriptor["partition_name"] for descriptor in chains]
+
+    # Verify what we produced.  avbtool resolves chained images by name in the
+    # directory of the top-level vbmeta, so stage symlinks for the firmware
+    # images and for the logical partitions extracted from super.
+    with tempfile.TemporaryDirectory(prefix="avb-verify-", dir=str(out)) as stage:
+        stage_path = Path(stage)
+        for path in out_fw.glob("*.img"):
+            link = stage_path / path.name
+            if not link.exists():
+                link.symlink_to(path.resolve())
+        for name, path in raw_parts.items():
+            link = stage_path / f"{name}.img"
+            if not link.exists() and path.is_file():
+                link.symlink_to(path.resolve())
+        try:
+            _avbtool(
+                [
+                    "verify_image",
+                    "--image",
+                    str(stage_path / "vbmeta.img"),
+                    "--follow_chain_partitions",
+                ],
+                log,
+            )
+            report["verified"] = True
+        except ToolError as error:
+            log(f"  warning: custom AVB chain did not verify: {error}")
+            report["verified"] = False
     return report

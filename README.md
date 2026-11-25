@@ -86,7 +86,7 @@ unzip -q <full-ota>.zip -d <full-ota>
 - **不规避 anti-rollback。** 跨版本降级可能被 bootloader 拒绝。
 - **不自动清空数据。** 刷机脚本只在重启前询问，默认保留；清空会丢失全部应用和文件。
 - **构建端只在 Linux 上验证。** macOS 未验证；Windows 只作为刷机端，不提供构建流程。
-- **不校验刷入后的系统完整性。** 默认移除 AVB / dm-verity 后，系统校验不再生效。
+- **需要自备 AVB 私钥。** 默认构建用 `--avb-key` 指定的密钥重签整条校验链；没有密钥时只能 `--keep-avb`。私钥泄露等于任何人都能给你的设备签系统镜像。
 
 ## 功能
 
@@ -105,7 +105,7 @@ unzip -q <full-ota>.zip -d <full-ota>
 - 目标平台决定脚本类型：`linux` / `macos` 为 bash，`windows` 为原生 PowerShell + `.cmd`
 - 可选 Windows 目标：`--target-platform windows` 配合 `--platform-tools-dir` 时把 Windows `adb.exe` / `fastboot.exe` 放入 `platform-tools/`
 - 构建日志与报告默认脱敏设备序列号，只保留后四位；`--keep-serial` 可关闭
-- 默认移除 `boot`、`vendor_boot`、`vendor` 内 fstab 的 AVB / dm-verity / 强制加密标记，并在刷 `vbmeta*` 时附加禁用校验参数；`--keep-avb` 可保留原设置
+- 默认保留 dm-verity，用 `--avb-key` 指定的私钥重签 `boot`、`dtbo`、`vendor_boot`、`vbmeta_system`、`vbmeta_vgc` 与顶层 `vbmeta`，并只移除 fstab 中的强制加密标记；`--keep-avb` 可保留原厂校验
 - 校验：`e2fsck`、`lpdump`、AVB 链、脚本引用完整性、稀疏镜像展开尺寸
 - 生成文件中不包含构建机的绝对路径
 
@@ -120,8 +120,8 @@ unzip -q <full-ota>.zip -d <full-ota>
 | `brotli` | 解压 `*.new.dat.br` |
 | `lpmake` / `lpdump` | 生成并校验 `super.img` |
 | `e2fsck` | 校验 ext4 分区镜像 |
-| `avbtool` | 校验 AVB 签名与链式分区；`--skip-avb` 可跳过 |
-| `liblz4` | 默认移除 AVB 时重压缩 ramdisk 与 EROFS fstab；`--keep-avb` 可跳过 |
+| `avbtool` | 校验并重签 AVB 链、重算 hashtree；`--skip-avb` 可跳过校验 |
+| `liblz4` | 修改 vendor_boot ramdisk 与 EROFS fstab 时重压缩；`--keep-avb` 可跳过 |
 | `adb` / `fastboot` | 仅在 `--probe-device` / `--require-device` 时探测；刷机时使用 |
 | 约 25 GiB 空闲磁盘 | 峰值约为动态分区总和 × 2 + 固件大小 × 2 |
 
@@ -297,17 +297,21 @@ OEM 修复：
 
 ## AVB、dm-verity 与强制加密
 
-生成的包默认按“关闭校验、取消强制加密”的方向处理：
+默认构建**保留 dm-verity**，并用 `--avb-key` 指定的私钥重签整条校验链：
 
-- 修改 `boot.img` 和 `vendor_boot.img` ramdisk 中的 `fstab.qcom`，以及 `vendor.img` 的 `/etc/fstab.qcom`；`vendor.img` 为 ext4 或 EROFS 时自动识别，Android 12 与 Android 15 的两种格式都支持；
-- 移除 `avb=...`、`avb_keys=...`、`avb`、`verify`、`vverify`、`fileencryption=...`、`keydirectory=...`、`metadata_encryption=...`、`keepverity`、`keepforceencrypt` 等标记；
-- 在 `vbmeta`、`vbmeta_system`、`vbmeta_oem`、`vbmeta_vgc` 的 AVB 头里写入“禁止校验”标记；写入的位与 `fastboot --disable-verity --disable-verification` 相同，但由构建端完成，刷机脚本按普通镜像直接写入。
+- `boot.img`、`dtbo.img`：内容不动，仅用 `avbtool resign_image` 重签尾部 vbmeta，避免破坏 boot header v4 自带的 4096 字节签名；
+- `vendor_boot.img`：改写 ramdisk 中 `fstab.qcom`，移除 `fileencryption=...`、`keydirectory=...`、`metadata_encryption=...` 等强制加密标记，然后用 `erase_footer` + `add_hash_footer` 重算 hash footer；
+- `vendor.img`：改写 `/etc/fstab.qcom`（ext4 / EROFS 自动识别），移除同样三类标记，再重算 dm-verity hashtree；bootloader 为 `vbmeta_system` 里的每个逻辑分区计算新的 descriptor；
+- `vbmeta_system`：用各分区镜像的最新 descriptor 重建并自签；`vbmeta_vgc` 直接 `resign_image`；
+- 顶层 `vbmeta`：解析原 chain descriptors，已重签的分区换成自建公钥，其余保留原公钥；`flags` 保持 `0`。
 
-补丁保持每个文件大小不变（删除的标记用空格补齐），因此不需要重建 cpio，也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成。带 boot v4 签名的 ramdisk 只要新帧仍在原页数内就允许增长；跨页才报错。
+之所以不是“去掉 AVB”，是因为 iQOO 9 Pro 的 bootloader 拒绝 AVB disable 标记：`flags=1` 与 `flags=3` 都会在几秒内退回 fastboot，且 fstab 里的 `avb=` 一旦删除，first-stage 挂载直接失败。保留 `avb=`、`verify`、`vverify` 与 `flags=0`、改用自签密钥，是唯一验证可行的路径。刷机脚本按普通镜像直接写入 `vbmeta*`，不再附加 `--disable-verity` / `--disable-verification`，因此也不会触发部分 platform-tools 的 `Failed to find AVB_MAGIC at offset: 0` 缺陷。
+
+补丁保持每个文件大小不变（删除的标记用空格补齐），不需要重建 cpio，也不改动 ext4 inode / EROFS 元数据。AVB 链校验在打补丁之前对原始 OTA 镜像完成，构建末尾再对重签结果做一次本地 `avbtool verify_image --follow_chain_partitions`（失败只告警，不阻断出包）。
+
+`add_hashtree_footer` 在本机走 `--do_not_generate_fec`：`avbtool` 生成 FEC 需要外部 `fec` 工具，而 dm-verity 校验不依赖 FEC。若需要与原厂一致的 FEC 布局，自行安装 `fec` 后去掉该参数。
 
 若希望保留原厂校验与强制加密，构建时加 `--keep-avb`；包内 `package.env` 的 `AVB_STRIPPED` 仅用于记录最终状态，镜像内容本身才是依据。
-
-构建端改写 `vbmeta*` 标记，是为了绕开部分 platform-tools 的缺陷：当 `vbmeta.img` 小于所在分区时，`fastboot --disable-verity` 可能报 `Failed to find AVB_MAGIC at offset: 0`，并拒绝写入。预置标记后，`fastboot flash vbmeta ...` 不传这两个参数即可，刷机后执行 `verify.sh` 也不会再出现被改写文件。
 
 移除强制加密后，已加密的 `userdata` 可能需要清空才能启动。刷机脚本在全部写入完成、自动重启之前会询问是否清空数据（默认保留）：确认后优先用 `fastboot -w` 擦除并格式化 `userdata`、`cache`、`metadata`，再补擦 `frp`；旧版 platform-tools 不支持时回退为 `fastboot erase userdata` 等传统命令。只清理数据分区，系统、boot、vendor、super、modem 与 OEM 分区保持已刷入状态。
 
@@ -335,7 +339,8 @@ OEM 修复：
 | `--reuse-raw` | 配合 `--resume`：分区镜像尺寸匹配时跳过解包 |
 | `--reuse-super` | 配合 `--resume`：`super.img` 匹配时跳过 `lpmake` |
 | `--keep-raw` | 保留 `out/<名>/.raw/` 下的中间镜像 |
-| `--keep-avb` | 保留 OTA 原始的 AVB / dm-verity / 强制加密设置；默认移除并在刷 `vbmeta*` 时禁用校验 |
+| `--avb-key FILE` | PEM 私钥，用于重签 AVB 链并重算修改分区的 hashtree；未加 `--keep-avb` 时必填 |
+| `--keep-avb` | 保留 OTA 原始的 AVB / dm-verity / 强制加密设置 |
 | `--skip-fsck` / `--skip-avb` | 跳过对应校验，不建议 |
 | `--no-super` / `--no-scripts` | 只生成部分内容，调试用 |
 | `--force` | 删除非空输出目录后重建 |
@@ -343,19 +348,26 @@ OEM 修复：
 示例：
 
 ```bash
+# 默认：自签 AVB 链并取消强制加密，需要提供 PEM 私钥
+./ota2fastboot.py /path/to/<full-ota> --avb-key ~/avb/testkey.pem
+
 # 指定 OEM 制式
-./ota2fastboot.py /path/to/<full-ota> \
+./ota2fastboot.py /path/to/<full-ota> --avb-key ~/avb/testkey.pem \
     --oem PD2172C_CN-ZH_FULL_SC_CT-BMW
 
+# 保留原厂 AVB 与强制加密（不需要私钥）
+./ota2fastboot.py /path/to/<full-ota> --keep-avb
+
 # 中断后继续
-./ota2fastboot.py /path/to/<full-ota> \
+./ota2fastboot.py /path/to/<full-ota> --avb-key ~/avb/testkey.pem \
     --resume --reuse-raw --reuse-super
 
 # 其他机型，指定 super 大小（字节或 14GiB 这类写法）
-./ota2fastboot.py /path/to/<full-ota> --device-size 8GiB
+./ota2fastboot.py /path/to/<full-ota> --avb-key ~/avb/testkey.pem \
+    --device-size 8GiB
 
 # 只探测指定 ADB 设备，并要求它必须存在且与 OTA 匹配
-./ota2fastboot.py /path/to/<full-ota> \
+./ota2fastboot.py /path/to/<full-ota> --avb-key ~/avb/testkey.pem \
     --probe-device --serial <serial> --require-device
 
 # Windows 目标，并附带 platform-tools
@@ -398,7 +410,7 @@ OEM 修复：
    - `vbmeta_oem`
    - `vbmeta_vgc`
 
-   默认移除 AVB 时，这一步在打补丁之前对原始 OTA 镜像执行；打补丁后不再校验 AVB。
+   默认的自签构建会先在打补丁之前对原始 OTA 镜像执行一次；构建末尾还会对自签结果再校验一次，失败仅告警。
 4. 脚本引用检查：生成的 `firmware-update/flash-items-*.txt` 中每个必需镜像都存在
 5. 稀疏镜像展开尺寸等于请求的 `super` 大小（`--device-size`、设备探测值或默认值）
 6. SHA-256 清单可验证：
@@ -435,7 +447,7 @@ $env:SKIP_MODEL_CHECK = "1"
 - 完整线刷脚本（`flash-full.sh` / `flash-full.cmd`）会写 bootloader 链和 UFS 固件。没有 EDL 恢复手段时，优先使用安全线刷脚本（`flash.sh` / `flash.cmd`）。
 - 安全线刷脚本不写 `storage`、`xbl`、`xbl_config`、`abl`、`tz`、`hyp`、`aop`、`devcfg`、`keymaster`、`uefisecapp`、`uefi`、`shrm`、`cpucp`、`imagefv`、`multiimg*`、`storsec`、`featenabler`、`toolsfv`、`xbl_ramdump`。
 - 跨版本刷入可能抬高 anti-rollback 计数；降级 bootloader 可能被设备拒绝。
-- 默认生成的包会移除 AVB / dm-verity / 强制加密，并在刷 `vbmeta*` 时禁用校验；系统完整性校验因此失效。只在你自己的设备上使用。
+- 默认生成的包保留 dm-verity，但整条 AVB 链由自建密钥签名；请妥善保管 `--avb-key` 私钥并只在自己的设备上使用。
 - 刷机完成后可选择清空数据；清空会丢失全部应用与文件，请先备份。
 - 必须解锁 Bootloader。
 
@@ -465,7 +477,7 @@ $env:SKIP_MODEL_CHECK = "1"
 | `ota2fastboot/` | 转换器源码包 |
 | `ota2fastboot/cli.py` | 命令行参数 |
 | `ota2fastboot/builder.py` | 构建流程 |
-| `ota2fastboot/avb.py` | 移除 fstab 中的 AVB / verity / 强制加密标记 |
+| `ota2fastboot/avb.py` | 修改 fstab 强制加密标记、重签 AVB 链、重算 hashtree |
 | `ota2fastboot/device.py` | ADB 探测、必要时进 bootloader 补读、机型匹配 |
 | `ota2fastboot/ota.py` | OTA 元数据、transfer list、op list |
 | `ota2fastboot/stream.py` | `.new.dat` 解包 |

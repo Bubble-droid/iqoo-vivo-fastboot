@@ -138,12 +138,22 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-fsck", action="store_true", help="skip e2fsck")
     parser.add_argument("--skip-avb", action="store_true", help="skip avbtool checks")
     parser.add_argument(
+        "--avb-key",
+        type=Path,
+        help=(
+            "PEM private key used to re-sign the AVB chain (boot, dtbo, "
+            "vendor_boot, vbmeta_system, vbmeta_vgc and vbmeta) and to "
+            "recompute hashtrees for modified partitions; required unless "
+            "--keep-avb is given"
+        ),
+    )
+    parser.add_argument(
         "--keep-avb",
         action="store_true",
         help=(
-            "keep AVB, dm-verity and force-encryption untouched; by default the "
-            "build removes them from the fstab inside boot, vendor_boot and "
-            "vendor, and the flash scripts disable vbmeta verification"
+            "keep AVB, dm-verity and force-encryption untouched; the default "
+            "re-signs the chain with --avb-key and removes only the "
+            "force-encryption flags"
         ),
     )
     parser.add_argument("--keep-raw", action="store_true", help="keep extracted partition images")

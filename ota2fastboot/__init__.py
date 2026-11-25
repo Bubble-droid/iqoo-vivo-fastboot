@@ -58,11 +58,14 @@ What the converter does:
    the generated super metadata, and ``avbtool verify_image
    --follow_chain_partitions`` for ``vbmeta``, ``vbmeta_system``,
    ``vbmeta_oem`` and ``vbmeta_vgc``;
-8. removes the AVB, dm-verity and force-encryption flags from the fstab inside
-   ``boot``, ``vendor_boot`` and ``vendor`` (skip with ``--keep-avb``).  The
-   vendor image may be ext4 or EROFS; both are patched in place.  Then builds
-   a sparse ``super.img`` with ``lpmake`` from the OTA op-list sizes,
-   including the selected ``oem`` and ``vgc`` variants;
+8. keeps dm-verity, removes the force-encryption flags from the fstab inside
+   ``vendor_boot`` and ``vendor``, recomputes their hash footer / hashtree and
+   re-signs ``boot``, ``dtbo``, ``vendor_boot``, ``vbmeta_system``,
+   ``vbmeta_vgc`` and ``vbmeta`` with the ``--avb-key`` private key (skip all
+   of it with ``--keep-avb``).  The vendor image may be ext4 or EROFS; both
+   are patched in place.  Then builds a sparse ``super.img`` with ``lpmake``
+   from the OTA op-list sizes, including the selected ``oem`` and ``vgc``
+   variants;
 9. writes the package README, the generated flash-item lists, a SHA-256
    manifest, a build report and the platform-specific scripts from
    ``scripts/bash`` or ``scripts/windows``; with ``--target-platform windows``
