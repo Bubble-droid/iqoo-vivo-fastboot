@@ -207,12 +207,33 @@ show_device_info() {
     fi
 }
 
+# Kept for older callers; see enter_bootloader.
 enter_fastboot() {
-    if [ "$DEVICE_MODE" = "adb" ]; then
-        echo " -- Rebooting into fastboot..."
+    enter_bootloader
+}
+
+is_fastbootd() {
+    fb getvar is-userspace 2>&1 | grep -qE 'is-userspace:[[:space:]]*yes'
+}
+
+# Put the phone into the bootloader, whichever mode it started in.  adb and
+# fastbootd both have to leave userspace before the physical partitions can be
+# written; a phone already in the bootloader stays where it is.
+enter_bootloader() {
+    case "$DEVICE_MODE" in
+    adb)
+        echo " -- Rebooting into the bootloader..."
         adb_ reboot bootloader || die "reboot error"
         wait_for_fastboot 90 || die "No devices are connected! Flashing aborted."
-    fi
+        ;;
+    fastboot)
+        if is_fastbootd; then
+            echo " -- Rebooting from fastbootd to the bootloader..."
+            fb reboot bootloader || die "reboot error"
+            wait_for_fastboot 90 || die "No devices are connected! Flashing aborted."
+        fi
+        ;;
+    esac
 }
 
 check_unlocked() {
@@ -372,7 +393,7 @@ wipe_user_data() {
     # Wiping there reports "wipe task partition not found" for userdata,
     # cache and metadata but still exits 0, so switch to the bootloader,
     # which owns those physical partitions.
-    if fb getvar is-userspace 2>&1 | grep -qE 'is-userspace:[[:space:]]*yes'; then
+    if is_fastbootd; then
         echo " -- Rebooting from fastbootd to the bootloader for the wipe..."
         fb reboot bootloader >/dev/null 2>&1 || true
         wait_for_fastboot 60 || true

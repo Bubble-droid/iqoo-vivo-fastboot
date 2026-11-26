@@ -53,7 +53,7 @@ cls
 acquire_device
 cls
 show_device_info
-enter_fastboot
+enter_bootloader
 
 cls
 echo

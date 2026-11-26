@@ -60,7 +60,7 @@ Clear-Screen
 Acquire-Device
 Clear-Screen
 Show-DeviceInfo
-Enter-Fastboot
+Enter-Bootloader
 
 Clear-Screen
 Write-Host ''

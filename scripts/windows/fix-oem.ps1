@@ -124,8 +124,16 @@ if ($count -eq 0) {
     exit 0
 }
 
-$preferred = Get-PropValue 'ro.vivo.oem.name'
-if (-not $preferred) { $preferred = $script:OemIdentity }
+# Prefer the identity reported by the connected phone, then the identity that
+# the package itself was built with.  Acquire-Device reads it over adb before
+# the phone is moved to the bootloader.
+Require-Fastboot
+Clear-Screen
+Acquire-Device
+Clear-Screen
+Show-DeviceInfo
+
+$preferred = if ($script:DeviceOem) { $script:DeviceOem } else { $script:OemIdentity }
 
 $defaultIndex = 0
 if ($preferred) {
@@ -165,7 +173,8 @@ function Find-Choice {
 Write-Host ''
 Write-Host 'Script notes:'
 Write-Host '  -- Restores the OEM/cust identity after a fastboot flash.'
-Write-Host '  -- The phone must be unlocked and in Fastboot mode.'
+Write-Host '  -- The phone must be unlocked. ADB and fastbootd are switched to the'
+Write-Host '  -- bootloader automatically.'
 Write-Host '  -- Select by number or by part of the image name.'
 Write-Host ''
 Write-Host '----------------------------------'
@@ -282,20 +291,9 @@ if (-not $AssumeYes) {
     }
 }
 
-if (-not (Test-Command 'fastboot')) {
-    Die 'fastboot not found in PATH. Install Android platform-tools.'
-}
-
-while (-not (Get-FirstFastbootDevice)) {
-    Write-Host ''
-    Write-Host ' No device connected in Fastboot mode. Waiting...'
-    Start-Sleep -Seconds 2
-}
-
-$unlock = Get-FastbootResult -Arguments @('getvar', 'unlocked')
-if ($unlock.Text -notmatch 'unlocked:\s*yes') {
-    Die 'Device is locked. Unlocking the bootloader is required.'
-}
+# adb and fastbootd both have to reach the bootloader before flashing.
+Enter-Bootloader
+Check-Unlocked
 
 Write-Host ''
 if ($selectedKind -eq 'file') {

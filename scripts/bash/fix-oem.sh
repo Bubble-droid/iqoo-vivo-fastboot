@@ -134,9 +134,15 @@ if [ "$count" -eq 0 ]; then
 fi
 
 # Prefer the identity reported by the connected phone, then the identity that
-# the package itself was built with.
-preferred="$(getprop_value ro.vivo.oem.name)"
-[ -n "$preferred" ] || preferred="${OEM_IDENTITY:-}"
+# the package itself was built with.  acquire_device reads it over adb before
+# the phone is moved to the bootloader.
+require_fastboot
+cls
+acquire_device
+cls
+show_device_info
+
+preferred="${DEVICE_OEM:-${OEM_IDENTITY:-}}"
 
 default_index=0
 if [ -n "$preferred" ]; then
@@ -173,7 +179,8 @@ find_choice() {
 echo
 echo "Script notes:"
 echo "  -- Restores the OEM/cust identity after a fastboot flash."
-echo "  -- The phone must be unlocked and in Fastboot mode."
+echo "  -- The phone must be unlocked. ADB and fastbootd are switched to the"
+echo "  -- bootloader automatically."
 echo "  -- Select by number or by part of the image name."
 echo
 echo "----------------------------------"
@@ -277,20 +284,9 @@ if [ "$ASSUME_YES" -ne 1 ]; then
     fi
 fi
 
-# Wait for Fastboot.
-while :; do
-    dev="$(first_fastboot_device)"
-    if [ -n "$dev" ]; then
-        break
-    fi
-    echo
-    echo " No device connected in Fastboot mode. Waiting..."
-    sleep 2
-done
-
-if ! fb getvar unlocked 2>&1 | grep -qE 'unlocked:[[:space:]]*yes'; then
-    die "Device is locked. Unlocking the bootloader is required."
-fi
+# adb and fastbootd both have to reach the bootloader before flashing.
+enter_bootloader
+check_unlocked
 
 echo
 if [ "$ptype" = "file" ]; then

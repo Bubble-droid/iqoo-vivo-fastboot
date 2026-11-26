@@ -294,13 +294,39 @@ function Show-DeviceInfo {
     }
 }
 
+# Kept for older callers; see Enter-Bootloader.
 function Enter-Fastboot {
-    if ($script:DeviceMode -ne 'adb') { return }
-    Write-Host ' -- Rebooting into fastboot...'
-    Invoke-Adb -Arguments @('reboot', 'bootloader')
-    if ($LASTEXITCODE -ne 0) { Die 'reboot error' }
-    if (-not (Wait-ForFastboot -TimeoutSeconds 90)) {
-        Die 'No devices are connected! Flashing aborted.'
+    Enter-Bootloader
+}
+
+function Test-Fastbootd {
+    $result = Get-FastbootResult -Arguments @('getvar', 'is-userspace')
+    return $result.Text -match 'is-userspace:\s*yes'
+}
+
+# Put the phone into the bootloader, whichever mode it started in.  adb and
+# fastbootd both have to leave userspace before the physical partitions can be
+# written; a phone already in the bootloader stays where it is.
+function Enter-Bootloader {
+    switch ($script:DeviceMode) {
+        'adb' {
+            Write-Host ' -- Rebooting into the bootloader...'
+            Invoke-Adb -Arguments @('reboot', 'bootloader')
+            if ($LASTEXITCODE -ne 0) { Die 'reboot error' }
+            if (-not (Wait-ForFastboot -TimeoutSeconds 90)) {
+                Die 'No devices are connected! Flashing aborted.'
+            }
+        }
+        'fastboot' {
+            if (Test-Fastbootd) {
+                Write-Host ' -- Rebooting from fastbootd to the bootloader...'
+                Invoke-Fastboot -Arguments @('reboot', 'bootloader')
+                if ($LASTEXITCODE -ne 0) { Die 'reboot error' }
+                if (-not (Wait-ForFastboot -TimeoutSeconds 90)) {
+                    Die 'No devices are connected! Flashing aborted.'
+                }
+            }
+        }
     }
 }
 
@@ -467,8 +493,7 @@ function Clear-UserData {
     # Wiping there reports "wipe task partition not found" for userdata,
     # cache and metadata but still exits 0, so switch to the bootloader,
     # which owns those physical partitions.
-    $userspace = Get-FastbootResult -Arguments @('getvar', 'is-userspace')
-    if ($userspace.Text -match 'is-userspace:\s*yes') {
+    if (Test-Fastbootd) {
         Write-Host ' -- Rebooting from fastbootd to the bootloader for the wipe...'
         Invoke-Fastboot -Arguments @('reboot', 'bootloader') | Out-Null
         Wait-ForFastboot 60 | Out-Null
