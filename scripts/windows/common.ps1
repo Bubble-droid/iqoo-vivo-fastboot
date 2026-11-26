@@ -458,8 +458,20 @@ function Repair-Oem {
     Write-Host " -- OEM repair target: $oem"
     $vbmeta = "firmware-update/oem/vbmeta_oem_$oem.img"
     $image = "firmware-update/oem/OEM_$oem.img"
+    $hasVbmeta = Test-Path -LiteralPath $vbmeta -PathType Leaf
+    $hasImage = Test-Path -LiteralPath $image -PathType Leaf
 
-    if (Test-Path -LiteralPath $vbmeta -PathType Leaf) {
+    if (-not $hasVbmeta -and -not $hasImage) {
+        Write-Host " -- No OEM repair image for $oem; run .\fix-oem.cmd after boot to select an identity."
+        return
+    }
+
+    if (-not (Confirm-Action -Prompt "Restore the OEM identity ($oem) now?" -Default 'y')) {
+        Write-Host ' -- Skipping OEM repair. Run .\fix-oem.cmd after boot if the identity is wrong.'
+        return
+    }
+
+    if ($hasVbmeta) {
         Flash-Part -Partition 'vbmeta_oem' -Image $vbmeta
         Reboot-Fastboot
     }
@@ -467,7 +479,7 @@ function Repair-Oem {
         Write-Host " -- $vbmeta not found; keeping the vbmeta_oem already flashed."
     }
 
-    if (Test-Path -LiteralPath $image -PathType Leaf) {
+    if ($hasImage) {
         Flash-Part -Partition 'oem' -Image $image
     }
     else {
@@ -555,6 +567,11 @@ function Ask-UserDataWipe {
 
 function Final-Reboot {
     Write-Host ''
+    if (-not (Confirm-Action -Prompt 'Reboot the phone now?' -Default 'y')) {
+        Write-Host ' -- Staying in Fastboot mode.'
+        Write-Host ' -- Reboot manually when ready: fastboot reboot'
+        return
+    }
     Write-Host ' -- Flashing finished. Rebooting...'
     Invoke-Fastboot -Arguments @('reboot')
     if ($LASTEXITCODE -ne 0) { Die 'reboot error' }

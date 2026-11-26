@@ -361,6 +361,16 @@ repair_oem() {
     fi
 
     echo " -- OEM repair target: $oem"
+    if [ ! -f "$vbmeta" ] && [ ! -f "$image" ]; then
+        echo " -- No OEM repair image for $oem; run ./fix-oem.sh after boot to select an identity."
+        return 0
+    fi
+
+    if ! confirm "Restore the OEM identity ($oem) now?" y; then
+        echo " -- Skipping OEM repair. Run ./fix-oem.sh after boot if the identity is wrong."
+        return 0
+    fi
+
     if [ -f "$vbmeta" ]; then
         flash_part vbmeta_oem "$vbmeta"
         reboot_fastboot
@@ -458,6 +468,11 @@ ask_wipe_user_data() {
 
 final_reboot() {
     echo
+    if ! confirm "Reboot the phone now?" y; then
+        echo " -- Staying in Fastboot mode."
+        echo " -- Reboot manually when ready: fastboot reboot"
+        return 0
+    fi
     echo " -- Flashing finished. Rebooting..."
     if ! fb reboot; then
         die "reboot error"
