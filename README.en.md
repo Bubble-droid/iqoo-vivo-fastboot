@@ -207,6 +207,7 @@ out/<OTA name>-fastboot/
 ├── flash-safe.sh             # compatibility alias for flash.sh
 ├── fix-oem.sh                # OEM identity repair
 ├── verify.sh                 # verify manifest.sha256
+├── resign.sh                 # recompute and re-sign AVB after image changes
 ├── common.sh                 # shared helpers for the scripts above
 ├── manifest.sha256           # package integrity manifest
 ├── manifest.json
@@ -235,6 +236,7 @@ out/<OTA name>-fastboot/
 ├── flash-safe.ps1 / flash-safe.cmd        # compatibility alias
 ├── fix-oem.ps1 / fix-oem.cmd              # OEM identity repair
 ├── verify.ps1 / verify.cmd                # verify manifest.sha256
+├── resign.ps1 / resign.cmd                # recompute and re-sign AVB after image changes
 ├── common.ps1                             # shared helpers
 ├── manifest.sha256
 ├── manifest.json
@@ -260,7 +262,22 @@ out/<OTA name>-fastboot/
 | Full flash | `flash-full.sh` | `flash-full.ps1` or `flash-full.cmd` |
 | OEM repair | `fix-oem.sh` | `fix-oem.ps1` or `fix-oem.cmd` |
 | Verify the package | `verify.sh` | `verify.ps1` or `verify.cmd` |
+| Re-sign after image changes | `resign.sh` | `resign.ps1` or `resign.cmd` |
 | Old-name alias | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
+
+After modifying an image (for example, patching `boot.img` with Magisk or KernelSU), re-sign it before flashing:
+
+```bash
+./resign.sh boot
+./resign.sh --all
+```
+
+```powershell
+.\resign.cmd boot
+.\resign.cmd --all
+```
+
+The script reads the partition name, size, salt, hash algorithm and signing algorithm from the existing footer, recomputes the hash or dm-verity hashtree, and signs it again with your private key. The key is not packaged: pass `--key`, set `AVB_KEY`, or place `avb.pem` next to the script. `boot`, `dtbo` and `vendor_boot` are hash-footer images; `vbmeta*` is re-signed in place; logical partition images extracted from `super` get a new hashtree and require a `vbmeta_system` rebuild with `ota2fastboot`. The top-level `vbmeta` chain stores public keys, not digests, so it does not need rebuilding when the same key is used.
 
 The safe flash writes `boot`, `dtbo`, `vendor_boot`, `recovery`, `vm-bootsys`, `vbmeta*`, `super` and repairs the OEM identity. Fastboot remains reachable, so an older package can be flashed back if it fails. The full flash also writes `xbl`, `abl`, `tz`, `hyp`, `storage` and the rest of the bootloader chain; an interrupted bootloader write may be unrecoverable without EDL.
 
@@ -529,12 +546,14 @@ $env:SKIP_MODEL_CHECK = "1"
 | `scripts/bash/flash-safe.sh` | Old-name compatibility alias |
 | `scripts/bash/fix-oem.sh` | OEM repair template |
 | `scripts/bash/verify.sh` | Package integrity verification template |
+| `scripts/bash/resign.sh` | AVB re-sign template for locally modified images |
 | `scripts/windows/common.ps1` | Shared helpers for Windows flash scripts |
 | `scripts/windows/flash.ps1` | Default safe flash template |
 | `scripts/windows/flash-full.ps1` | Full flash template |
 | `scripts/windows/flash-safe.ps1` | Old-name compatibility alias |
 | `scripts/windows/fix-oem.ps1` | OEM repair template |
 | `scripts/windows/verify.ps1` | Package integrity verification template |
+| `scripts/windows/resign.ps1` | AVB re-sign template for locally modified images |
 | `scripts/windows/*.cmd` | Launchers that bypass the execution policy |
 | `out/` | Generated fastboot packages (git ignored) |
 

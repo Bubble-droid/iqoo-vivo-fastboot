@@ -195,6 +195,36 @@ def render_package_readme(
             "刷机脚本不附加任何禁用参数。"
         )
 
+    if avb_stripped:
+        resign_cmd = ".\\resign.cmd" if windows else "./resign.sh"
+        resign_lang = "powershell" if windows else "bash"
+        resign_block = (
+            f"```{resign_lang}\n"
+            f"{resign_cmd} boot        # 例如 Magisk / KernelSU 修补 boot.img 之后\n"
+            f"{resign_cmd} --all       # 重签包内全部 AVB 镜像\n"
+            "```"
+        )
+        resign_note = (
+            "\n\n## 修改镜像后重签\n\n"
+            "包内镜像使用构建密钥签名。刷机前若自行改过镜像（例如用 Magisk / "
+            "KernelSU 修补 `boot.img`），原 AVB footer 已与内容不符，须先重签：\n\n"
+            f"{resign_block}\n\n"
+            "脚本从现有 footer 读取分区名、大小、salt、哈希算法与签名算法，"
+            "重算 hash 或 dm-verity hashtree，再用你的私钥重签。私钥不在包内："
+            "用 `--key` 指定，或设 `AVB_KEY`，或把 `avb.pem` 放在脚本旁。"
+            "`boot`、`dtbo`、`vendor_boot` 为 hash footer；`vbmeta`、"
+            "`vbmeta_system`、`vbmeta_vgc` 原地重签；从 `super` 拆出的逻辑分区"
+            "会重算 hashtree，之后须用 `ota2fastboot` 重建 `vbmeta_system`。"
+            "顶层 `vbmeta` 的 chain 只存公钥，不存镜像摘要，同一把密钥重签"
+            "无需重建。"
+        )
+    else:
+        resign_note = (
+            "\n\n## 修改镜像后重签\n\n"
+            "本包用 `--keep-avb` 构建，镜像仍由原厂密钥签名。`resign` 脚本虽已"
+            "附带，但改用其他密钥会破坏原厂校验链，故不建议使用。"
+        )
+
     nv_note = (
         "\n\n### 基带、IMEI 与 AVB\n\n"
         "AVB 重签只改动系统校验链，不涉及基带校准与 IMEI / MEID 存储。"
@@ -260,7 +290,7 @@ def render_package_readme(
 
 {alias_note}
 
-{avb_note}{nv_note}
+{avb_note}{nv_note}{resign_note}
 
 ## OEM 与 VGC
 
@@ -479,6 +509,56 @@ def render_build_md(
             "Android partitions can still leave RIL unable to read the",
             "baseband or IMEI because the bootloader and modem keep the old",
             "release; use `flash-full.sh` for A12 <-> A15.",
+            "",
+        ]
+
+    if avb_stripped:
+        if target_platform == "windows":
+            resign_examples = [
+                "```powershell",
+                ".\\resign.cmd boot        # after patching boot.img",
+                ".\\resign.cmd --all       # every packaged AVB image",
+                "```",
+            ]
+        else:
+            resign_examples = [
+                "```bash",
+                "./resign.sh boot          # after patching boot.img",
+                "./resign.sh --all         # every packaged AVB image",
+                "```",
+            ]
+        lines += [
+            "## Re-signing after local changes",
+            "",
+            "The package images are signed with the build key. If an image is",
+            "modified afterwards (for example, `boot.img` patched by Magisk or",
+            "KernelSU), its AVB footer no longer matches the content. Re-sign it",
+            "before flashing:",
+            "",
+            *resign_examples,
+            "",
+            "The script reads the partition name, size, salt, hash algorithm and",
+            "signing algorithm from the existing footer, recomputes the hash or",
+            "dm-verity hashtree, and signs it again with your private key. Pass",
+            "`--key PATH`, set `AVB_KEY`, or put `avb.pem` next to the script.",
+            "The private key is not included in the package.",
+            "",
+            "`boot`, `dtbo` and `vendor_boot` are hash-footer images.",
+            "`vbmeta`, `vbmeta_system` and `vbmeta_vgc` are re-signed in place.",
+            "Extracted logical partition images (`system`, `vendor`, ...) get a",
+            "new hashtree; rebuild `vbmeta_system` afterwards with `ota2fastboot`",
+            "so it carries the new root digests.",
+            "",
+            "The top-level `vbmeta` chain stores public keys, not image digests,",
+            "so it does not need to be rebuilt when the same key is used. A",
+            "different key requires a full rebuild with `ota2fastboot --avb-key`.",
+            "",
+        ]
+    else:
+        lines += [
+            "The `resign` script is packaged but is not useful with `--keep-avb`:",
+            "the images are signed with the stock key, and re-signing them with",
+            "another key would break the stock chain.",
             "",
         ]
 

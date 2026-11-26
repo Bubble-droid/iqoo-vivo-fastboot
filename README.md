@@ -207,6 +207,7 @@ out/<OTA 名称>-fastboot/
 ├── flash-safe.sh             # flash.sh 的兼容别名
 ├── fix-oem.sh                # OEM 身份修复
 ├── verify.sh                 # 按 manifest.sha256 校验包
+├── resign.sh                 # 修改镜像后重算并重签 AVB
 ├── common.sh                 # 上面脚本共用的函数
 ├── manifest.sha256           # 包完整性清单
 ├── manifest.json
@@ -235,6 +236,7 @@ out/<OTA 名称>-fastboot/
 ├── flash-safe.ps1 / flash-safe.cmd        # flash 的兼容别名
 ├── fix-oem.ps1 / fix-oem.cmd              # OEM 身份修复
 ├── verify.ps1 / verify.cmd                # 按 manifest.sha256 校验包
+├── resign.ps1 / resign.cmd                # 修改镜像后重算并重签 AVB
 ├── common.ps1                             # 上面脚本共用的函数
 ├── manifest.sha256
 ├── manifest.json
@@ -260,7 +262,22 @@ out/<OTA 名称>-fastboot/
 | 完整线刷 | `flash-full.sh` | `flash-full.ps1` 或 `flash-full.cmd` |
 | OEM 修复 | `fix-oem.sh` | `fix-oem.ps1` 或 `fix-oem.cmd` |
 | 校验包 | `verify.sh` | `verify.ps1` 或 `verify.cmd` |
+| 修改后重签 AVB | `resign.sh` | `resign.ps1` 或 `resign.cmd` |
 | 旧名称别名 | `flash-safe.sh` | `flash-safe.ps1` / `flash-safe.cmd` |
+
+修改过镜像（例如用 Magisk / KernelSU 修补 `boot.img`）后，先用重签脚本重算 AVB footer，再刷入：
+
+```bash
+./resign.sh boot
+./resign.sh --all
+```
+
+```powershell
+.\resign.cmd boot
+.\resign.cmd --all
+```
+
+脚本从现有 footer 读取分区名、大小、salt、哈希算法和签名算法，重算 hash / dm-verity hashtree，再用你的私钥签名。私钥不在包内：用 `--key` 指定，或设置 `AVB_KEY`，或把 `avb.pem` 放在脚本旁。`boot`、`dtbo`、`vendor_boot` 是 hash footer；`vbmeta*` 原地重签；从 `super` 拆出的逻辑分区会重算 hashtree，之后需用 `ota2fastboot` 重建 `vbmeta_system`。顶层 `vbmeta` 的 chain 只存公钥，不存镜像摘要，同一把 key 重签无需重建。
 
 安全线刷会写入 `boot`、`dtbo`、`vendor_boot`、`recovery`、`vm-bootsys`、`vbmeta*`、`super`，并在最后修复 OEM 身份，风险低：失败后仍可进入 Fastboot。完整线刷额外写入 `xbl`、`abl`、`tz`、`hyp`、`storage` 等，风险高：bootloader 写入中断可能无法用 EDL 之外的方式恢复。
 
@@ -529,12 +546,14 @@ $env:SKIP_MODEL_CHECK = "1"
 | `scripts/bash/flash-safe.sh` | 旧名称兼容别名 |
 | `scripts/bash/fix-oem.sh` | OEM 修复模板 |
 | `scripts/bash/verify.sh` | 包完整性校验模板 |
+| `scripts/bash/resign.sh` | 修改镜像后的 AVB 重签模板 |
 | `scripts/windows/common.ps1` | Windows 刷机脚本共用函数 |
 | `scripts/windows/flash.ps1` | 默认安全线刷模板 |
 | `scripts/windows/flash-full.ps1` | 完整线刷模板 |
 | `scripts/windows/flash-safe.ps1` | 旧名称兼容别名 |
 | `scripts/windows/fix-oem.ps1` | OEM 修复模板 |
 | `scripts/windows/verify.ps1` | 包完整性校验模板 |
+| `scripts/windows/resign.ps1` | 修改镜像后的 AVB 重签模板 |
 | `scripts/windows/*.cmd` | 绕过执行策略的启动器 |
 | `out/` | 生成的线刷包（git 忽略） |
 

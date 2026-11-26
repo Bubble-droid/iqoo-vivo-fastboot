@@ -31,6 +31,7 @@ REQUIRED_SCRIPTS = {
         "flash-safe.sh",
         "fix-oem.sh",
         "verify.sh",
+        "resign.sh",
     ),
     "windows": (
         "common.ps1",
@@ -39,6 +40,7 @@ REQUIRED_SCRIPTS = {
         "flash-safe.ps1",
         "fix-oem.ps1",
         "verify.ps1",
+        "resign.ps1",
     ),
 }
 
@@ -120,10 +122,10 @@ def check_script_contract(out: Path, platform: str, log: Log) -> None:
     family = script_family(platform)
     if family == "windows":
         flash_scripts = ("flash.ps1", "flash-full.ps1")
-        support_scripts = ("common.ps1", "verify.ps1")
+        support_scripts = ("common.ps1", "verify.ps1", "resign.ps1")
     else:
         flash_scripts = ("flash.sh", "flash-full.sh")
-        support_scripts = ("common.sh", "verify.sh")
+        support_scripts = ("common.sh", "verify.sh", "resign.sh")
 
     optional_missing: list[str] = []
     checked = 0

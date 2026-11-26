@@ -953,10 +953,14 @@ def _run(
         if target_platform == "windows":
             log(f"run: cd {display_out} && .\\verify.cmd && .\\flash.cmd")
             log("full flash: .\\flash-full.cmd (writes bootloader and UFS firmware)")
+            if avb_stripped:
+                log("after modifying an image: .\\resign.cmd boot")
         else:
             log(
                 f"run: cd {display_out} && chmod +x ./*.sh && "
                 "./verify.sh && ./flash.sh"
             )
             log("full flash: ./flash-full.sh (writes bootloader and UFS firmware)")
+            if avb_stripped:
+                log("after modifying an image: ./resign.sh boot")
     return 0
