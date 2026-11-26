@@ -235,6 +235,21 @@ run_avbtool() {
     fi
 }
 
+# avbtool verify_image resolves the payload as <partition>.img next to the
+# given file, so a custom file name such as kernelsu_patched.img fails even
+# though its footer is valid. Verify through a temporary link with the
+# expected name instead.
+verify_avb_image() {
+    local path=$1 name=$2 dir absolute rc
+    dir="$(mktemp -d "$TMP/verify.XXXXXX")"
+    absolute="$(cd "$(dirname "$path")" && pwd)/$(basename "$path")"
+    ln -s "$absolute" "$dir/$name.img"
+    avbtool verify_image --image "$dir/$name.img"
+    rc=$?
+    rm -rf "$dir"
+    return "$rc"
+}
+
 # Print the value of a field from "avbtool info_image" output.
 # The optional third argument selects a descriptor section.
 info_get() {
@@ -396,7 +411,7 @@ for target in "${TARGETS[@]}"; do
             --key "$KEY" \
             --algorithm "$algorithm"
         if [ "$VERIFY" -eq 1 ] && [ "$DRY_RUN" -eq 0 ]; then
-            avbtool verify_image --image "$path" >/dev/null ||
+            verify_avb_image "$path" "$name" >/dev/null ||
                 die "verification failed for $path"
         fi
         signed=$((signed + 1))
@@ -572,8 +587,8 @@ for target in "${TARGETS[@]}"; do
         if [ "$is_vbmeta" -eq 1 ]; then
             note "  signature rewritten; full chain verification needs the logical partition images"
         else
-            if ! avbtool verify_image --image "$path" >/dev/null 2>&1; then
-                avbtool verify_image --image "$path" >&2 || true
+            if ! verify_avb_image "$path" "$name" >/dev/null 2>&1; then
+                verify_avb_image "$path" "$name" >&2 || true
                 die "verification failed for $path"
             fi
             note "  verified"

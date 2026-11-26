@@ -124,6 +124,41 @@ function Get-AvbInfo {
     return (($output | ForEach-Object { "$_" }) -join "`n")
 }
 
+# avbtool verify_image resolves the payload as <partition>.img next to the
+# given file, so a custom file name such as kernelsu_patched.img fails even
+# though its footer is valid. Verify through a temporary link with the
+# expected name instead.
+function Test-AvbImage {
+    param([string]$Path, [string]$Name, [switch]$Quiet)
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ('avbverify-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    try {
+        $full = (Resolve-Path -LiteralPath $Path).Path
+        $link = Join-Path $dir ($Name + '.img')
+        try {
+            New-Item -ItemType SymbolicLink -Path $link -Target $full -ErrorAction Stop | Out-Null
+        }
+        catch {
+            try {
+                New-Item -ItemType HardLink -Path $link -Target $full -ErrorAction Stop | Out-Null
+            }
+            catch {
+                Copy-Item -LiteralPath $full -Destination $link -ErrorAction Stop
+            }
+        }
+        if ($Quiet) {
+            & avbtool verify_image --image $link | Out-Null
+        }
+        else {
+            & avbtool verify_image --image $link
+        }
+        return ($LASTEXITCODE -eq 0)
+    }
+    finally {
+        Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-AvbField {
     param([string]$Text, [string]$Key, [string]$Section = '')
     $current = ''
@@ -376,8 +411,9 @@ foreach ($target in $script:Targets) {
         )
         if (-not (Invoke-Avbtool $arguments)) { Die "could not sign $path" }
         if ($script:Verify -and -not $script:DryRun) {
-            & avbtool verify_image --image $path | Out-Null
-            if ($LASTEXITCODE -ne 0) { Die "verification failed for $path" }
+            if (-not (Test-AvbImage -Path $path -Name $name -Quiet)) {
+                Die "verification failed for $path"
+            }
         }
         $signed++
         continue
@@ -542,9 +578,7 @@ foreach ($target in $script:Targets) {
             Write-Note '  signature rewritten; full chain verification needs the logical partition images'
         }
         else {
-            & avbtool verify_image --image $path | Out-Null
-            if ($LASTEXITCODE -ne 0) {
-                & avbtool verify_image --image $path
+            if (-not (Test-AvbImage -Path $path -Name $name)) {
                 Die "verification failed for $path"
             }
             Write-Note '  verified'
