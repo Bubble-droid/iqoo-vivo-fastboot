@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from common.util import parse_size
+
 from . import __doc__ as TOOL_DOC
 from .builder import build
 from .constants import DEFAULT_DEVICE_SIZE
-from .util import parse_size
 
 
 def make_parser() -> argparse.ArgumentParser:

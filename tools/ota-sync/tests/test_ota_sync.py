@@ -15,7 +15,7 @@ for path in (str(TOOL_DIR), str(REPO_ROOT)):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from ota2fastboot.util import parse_size  # noqa: E402
+from common.util import parse_size  # noqa: E402
 from ota_sync import detect  # noqa: E402
 from ota_sync.session import SyncSession, safe_bound  # noqa: E402
 from ota_sync.state import SyncState, load_state, save_state  # noqa: E402

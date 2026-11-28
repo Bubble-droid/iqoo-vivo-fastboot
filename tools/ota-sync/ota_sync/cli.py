@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from common.util import parse_size
+
 from . import __version__, log
 from .adb import Adb, AdbError, select_device
 from .detect import (
@@ -14,7 +16,6 @@ from .detect import (
     detect,
     dump_db,
 )
-from ota2fastboot.util import parse_size
 from .session import SyncSession
 
 

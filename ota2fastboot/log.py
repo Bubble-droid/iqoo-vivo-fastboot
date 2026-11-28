@@ -5,14 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-
-def mask_serial(serial: str | None) -> str:
-    """Hide all but the last four characters of a device serial."""
-    if not serial:
-        return ""
-    if len(serial) <= 4:
-        return "*" * len(serial)
-    return "*" * (len(serial) - 4) + serial[-4:]
+from common.util import mask_serial
 
 
 class Log:

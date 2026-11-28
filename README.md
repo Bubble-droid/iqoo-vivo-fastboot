@@ -527,6 +527,7 @@ $env:SKIP_MODEL_CHECK = "1"
 | --- | --- |
 | `ota2fastboot.py` | 可执行入口，保留 `./ota2fastboot.py` 用法 |
 | `ota2fastboot/` | 转换器源码包 |
+| `common/` | 转换器与 tools 共享的纯函数（尺寸、哈希、命令检测、序列号脱敏） |
 | `ota2fastboot/cli.py` | 命令行参数 |
 | `ota2fastboot/builder.py` | 构建流程 |
 | `ota2fastboot/avb.py` | 修改 fstab 强制加密标记、重签 AVB 链、重算 hashtree |

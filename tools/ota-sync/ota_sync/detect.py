@@ -32,9 +32,10 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from common.util import fmt_size
+
 from . import log
 from .adb import Adb, AdbError
-from ota2fastboot.util import fmt_size
 
 # The download library (com.vivo.ic.dm) uses this when the app does not call
 # DownloadConfig.Builder.setCoreSize().  It is only a fallback: the real value

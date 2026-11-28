@@ -7,11 +7,12 @@ import subprocess
 import time
 from pathlib import Path
 
+from common.util import command_missing, fmt_size
+
 from .constants import BLOCK
 from .errors import ToolError
 from .log import Log
 from .ota import TransferList, find_streams
-from .util import command_missing, fmt_size
 
 
 class ChainReader:

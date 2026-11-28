@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from common.util import fmt_size, mask_serial, sha256_file
+
 from .constants import METADATA_SLOTS, SUPER_GROUP
 from .device import DeviceInfo
-from .log import Log, mask_serial
-from .util import fmt_size, sha256_file
+from .log import Log
 
 # The build log is written while the manifest is generated and is therefore
 # excluded, together with the manifest files themselves.  Every other file is

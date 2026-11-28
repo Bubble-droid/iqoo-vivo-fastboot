@@ -7,11 +7,13 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from common.util import command_missing, fmt_size
+
 from .constants import BLOCK, METADATA_SIZE, METADATA_SLOTS, SUPER_GROUP
 from .errors import ToolError
 from .log import Log
 from .sparse import read_sparse_head
-from .util import command_missing, fmt_size, run
+from .util import run
 
 
 def lp_metadata(path: Path, log: Log) -> dict:

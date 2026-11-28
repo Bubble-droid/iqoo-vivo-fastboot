@@ -23,14 +23,14 @@ sysfs read simply removes that field from the result.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from common.util import command_missing, fmt_size, mask_serial
+
 from .log import Log
-from .util import fmt_size
 
 ADB_TIMEOUT = 10
 FASTBOOT_TIMEOUT = 20
@@ -175,8 +175,6 @@ class DeviceInfo:
                 log("  bootloader: " + ", ".join(values))
 
     def to_dict(self, keep_serial: bool = True) -> dict:
-        from .log import mask_serial
-
         def scrub(value):
             if keep_serial or not self.serial:
                 return value
@@ -424,7 +422,7 @@ def _fastboot(serial: str, *args: str, timeout: int = FASTBOOT_TIMEOUT) -> str:
 
 
 def _adb_devices() -> list[tuple[str, str]]:
-    if shutil.which("adb") is None:
+    if command_missing("adb"):
         return []
     result = _run(["adb", "devices"], ADB_TIMEOUT)
     states = {
@@ -445,7 +443,7 @@ def _adb_devices() -> list[tuple[str, str]]:
 
 
 def _fastboot_devices() -> list[tuple[str, str]]:
-    if shutil.which("fastboot") is None:
+    if command_missing("fastboot"):
         return []
     result = _run(["fastboot", "devices"], ADB_TIMEOUT)
     entries: list[tuple[str, str]] = []

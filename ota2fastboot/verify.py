@@ -7,9 +7,10 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from common.util import command_missing
+
 from .constants import EXT4_MAGIC, EXT4_MAGIC_OFFSET
 from .log import Log
-from .util import command_missing
 
 
 def is_ext4(path: Path) -> bool:

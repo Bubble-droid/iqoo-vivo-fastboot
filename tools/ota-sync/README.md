@@ -121,7 +121,7 @@ adb shell 'rm -f /data/local/tmp/ota-keep-*.zip /data/local/ota-keep-*.zip'
 - `ota_sync/state.py`：断点状态。
 - `device/probe_bounds.sh`：设备端块级前缀探测。
 - `device/freeze_watch.sh`：设备端冻结看门狗。
-- 尺寸格式化、`parse_size`、SHA-256 复用 `ota2fastboot.util`，避免重复实现。
+- 尺寸格式化、`parse_size`、MD5/SHA-256 复用顶层 `common.util`，避免重复实现。
 
 设备 `mksh` 的 `$(( ))` 与 `[ ]` 是 32 位有符号，5 GB 级字节数会溢出，所以设备脚本一律用 64 KiB 块号或 `awk` 处理大数；`dd iflag=skip_bytes` 负责大于 4 GiB 的偏移。
 

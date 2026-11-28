@@ -527,6 +527,7 @@ $env:SKIP_MODEL_CHECK = "1"
 | --- | --- |
 | `ota2fastboot.py` | Executable entry point; keeps `./ota2fastboot.py` working |
 | `ota2fastboot/` | Converter source package |
+| `common/` | Pure helpers shared by the converter and tools (sizes, hashes, command checks, serial masking) |
 | `ota2fastboot/cli.py` | Command line arguments |
 | `ota2fastboot/builder.py` | Build pipeline |
 | `ota2fastboot/avb.py` | Remove force-encryption flags, re-sign the AVB chain, recompute hashtrees |

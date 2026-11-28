@@ -9,7 +9,6 @@ the updater from deleting the file or rebooting into recovery.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import re
 import shlex
@@ -19,6 +18,8 @@ import time
 import zipfile
 from pathlib import Path
 from typing import Optional
+
+from common.util import fmt_size, md5_file, sha256_file
 
 from . import log
 from .adb import Adb, AdbError
@@ -31,7 +32,6 @@ from .detect import (
     keep_basename,
 )
 from .state import SyncState, load_state, save_state
-from ota2fastboot.util import fmt_size, sha256_file
 
 DEVICE_DIR = Path(__file__).resolve().parent.parent / "device"
 WORK_DIR = "/data/local/tmp/ota-sync"
@@ -122,7 +122,7 @@ class SyncSession:
             return False
         if self.detection.server_md5:
             log.info("校验服务器 MD5（约数十秒）…")
-            if self.md5_local(path) != self.detection.server_md5:
+            if md5_file(path) != self.detection.server_md5:
                 log.warn("已有文件与服务器 MD5 不符，重新同步")
                 return False
         elif self.detection.server_sha256:
@@ -413,14 +413,6 @@ class SyncSession:
 
     # -- verification ------------------------------------------------------
 
-    @staticmethod
-    def md5_local(path: Path) -> str:
-        digest = hashlib.md5()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(8 << 20), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
-
     def md5_remote(self) -> str:
         log.info("设备端计算 MD5（约数十秒）…")
         try:
@@ -654,7 +646,7 @@ class SyncSession:
         with self.part.open("r+b") as handle:
             self.copy_ranges(handle, ranges, state)
 
-        local_md5 = self.md5_local(self.part)
+        local_md5 = md5_file(self.part)
         log.info(f"本机 MD5：{local_md5}")
         remote_md5 = self.md5_remote()
         log.info(f"设备 MD5：{remote_md5 or '不可用'}")
@@ -674,7 +666,7 @@ class SyncSession:
                     [(segment.start, segment.end) for segment in self.segments],
                     state,
                 )
-            local_md5 = self.md5_local(self.part)
+            local_md5 = md5_file(self.part)
             remote_md5 = self.md5_remote()
             log.info(f"重拷后 本机 {local_md5} / 设备 {remote_md5 or '不可用'}")
             accepted = bool(remote_md5) and local_md5 == remote_md5

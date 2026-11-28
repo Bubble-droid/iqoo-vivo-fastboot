@@ -9,6 +9,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from common.util import fmt_size, sha256_file
+
 from .avb import patch_images, resign_chain
 from .constants import BLOCK, DEFAULT_DEVICE_SIZE, SUPER_GROUP
 from .device import (
@@ -32,7 +34,7 @@ from .report import (
 from .sparse import probe_sparse_device_size
 from .stream import extract_partition
 from .super_image import build_super, lp_metadata
-from .util import fmt_size, free_space_check, reuse_image, sha256_file
+from .util import free_space_check, reuse_image
 from .variants import choose_oem, choose_vgc, model_candidates, oem_variants
 from .verify import fsck_images, verify_avb
 
