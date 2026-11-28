@@ -52,9 +52,9 @@ while :; do
   rb=0
   wb=0
   for p in $pids; do
-    v=$(sed -n 's/^rchar: //p' /proc/$p/io 2>/dev/null)
+    v=$(sed -n 's/^rchar: //p' /proc/"$p"/io 2>/dev/null)
     [ -n "$v" ] && rb=$(awk -v a="$rb" -v b="$v" 'BEGIN { printf "%.0f", a + b }')
-    v=$(sed -n 's/^wchar: //p' /proc/$p/io 2>/dev/null)
+    v=$(sed -n 's/^wchar: //p' /proc/"$p"/io 2>/dev/null)
     [ -n "$v" ] && wb=$(awk -v a="$wb" -v b="$v" 'BEGIN { printf "%.0f", a + b }')
   done
 
@@ -91,7 +91,7 @@ while :; do
 
   if [ -n "$reason" ]; then
     for p in $pids; do
-      kill -STOP $p 2>/dev/null
+      kill -STOP "$p" 2>/dev/null
     done
     echo "$reason $(date +%s) size=$s alloc=$alloc" > "$MARK"
     exit 0
