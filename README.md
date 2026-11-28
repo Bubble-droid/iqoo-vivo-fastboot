@@ -555,7 +555,11 @@ $env:SKIP_MODEL_CHECK = "1"
 | `scripts/windows/verify.ps1` | 包完整性校验模板 |
 | `scripts/windows/resign.ps1` | 修改镜像后的 AVB 重签模板 |
 | `scripts/windows/*.cmd` | 绕过执行策略的启动器 |
+| `tools/` | 独立辅助工具，与转换器解耦，可单独运行 |
+| `tools/ota-sync/` | 在更新器下载时抢救完整 OTA 包；自带 README 与测试 |
 | `out/` | 生成的线刷包（git 忽略） |
+
+`tools/` 下的工具不属于转换流程，按各自 README 使用；其中 `ota-sync` 用于在手机更新器下载系统包时提前同步出一份完整 OTA，得到 zip 后仍可交给本转换器。
 
 也可用模块方式运行：
 

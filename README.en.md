@@ -555,7 +555,11 @@ $env:SKIP_MODEL_CHECK = "1"
 | `scripts/windows/verify.ps1` | Package integrity verification template |
 | `scripts/windows/resign.ps1` | AVB re-sign template for locally modified images |
 | `scripts/windows/*.cmd` | Launchers that bypass the execution policy |
+| `tools/` | Standalone helper tools, decoupled from the converter |
+| `tools/ota-sync/` | Rescue a full OTA while the updater is downloading it; ships its own README and tests |
 | `out/` | Generated fastboot packages (git ignored) |
+
+Tools under `tools/` are not part of the conversion pipeline; follow each tool's README. `ota-sync`, for example, captures a complete OTA while the phone's updater is still downloading it, and the resulting zip can then be fed to this converter.
 
 The converter can also be run as a module:
 
